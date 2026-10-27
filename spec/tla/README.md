@@ -1075,11 +1075,11 @@ Not modelled for inherited taint (owner: the Go pull request named):
 | the sink sends marks the child learned as the child's own marks; transitivity up a chain depends on that | the model has one level | 3c-3: a mark learned by a grandchild reaches the root through the child's own record |
 | a parent node after the child is gated through the sink record | modelled as above (`ParentGated`) | 3c-3: a parent node after the child needs its instance through the sink record, after a crash between the child's record and the sink, and after `ResolveHalt` of the parent node |
 
-Not modelled, and who owns the Go test (none of the three exists yet; the pull request named adds it):
+Not modelled, and who owns the Go test (none of these exists yet; the pull request named adds it). `SeparateReverse` is modelled (`GRetally`, `OwnGateStable`, below):
 
 | Item | Property | Go test its owner pull request must contain |
 |---|---|---|
-| `SeparateReverse` (A5b) | the own gate is never recounted because of the instance; no circular exclusion | 3d: Build refuses a tool or node whose own gate and policy Gate share approver IDs, over `effectiveGates` (the model's tally is first-writer-wins, with no re-tally to attack) |
+| Build's disjoint approver sets (A2 layer 1) | for every tool or node that can be escalated and has an own gate, the approver ID sets of the effective own gate and of the policy Gate are disjoint, else ErrConfig | 3d: Build refuses a tool or node whose own gate and policy Gate share approver IDs, over `effectiveGates`, naming the tool or node and the shared IDs |
 | `CountsUnsigned` (A5b) | with `SeparateApprovers` set, a `SingleApproval` own gate or policy Gate is ErrConfig | 3d: a single-approval own gate with `SeparateApprovers` set is ErrConfig at registration or Build, naming the tool or node |
 | `VerifierIgnoresExclusion` (A5b) | `VerifyApprovals` recounts the instance with the same exclusion | 3d: `VerifyApprovals` recounts with `excluded_by_sibling`; the recount differs without it (the mutant test) |
 
@@ -1088,7 +1088,7 @@ static analysis. The instance has no early decisions (a decision recorded before
 decision-after-request ordering for the instance is left to the Go pull request that adds the instance
 (3c), as is every other Go-side property of the key parsers.
 
-<!-- modelsync: no-code flows NSink PEnd PGate PX -->
+<!-- modelsync: no-code flows NSink PEnd PGate PX GRetally -->
 <!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
@@ -1108,6 +1108,7 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `TPre` | `runGate`'s `preExec` (`journalhook.PreExec`) of the node gate and then of the instance, immediately before the node's Step: a certificate revoked after approval stops the node before the claim; a node whose result is recorded replays and runs no check |
 | `PGate` | (taint design, not built) the parent's later tracked node: its fold reads the sink's taint-mark record, so the child's mark makes it need its taint instance |
 | `PX` | (taint design, not built) that node's attempt claim: never ungated while the child's marks held |
+| `GRetally` | (taint design, A2 "Disjoint approvers", not built) `flowGate`'s re-tally of a recorded pass when separation of duties is in play: the own gate is never recounted because of the instance, so its pass is never superseded by it. The Go supersede is `agent/approval.go` and `agent/flowgate.go`'s re-tally under `ExcludePrincipal` (a passed tally recorded before the policy excluded the requester); the model has no principal, so there the re-tally has no cause but the instance, and the legitimate supersede is not modelled |
 | `NSink` | (taint design, C1 option B, not built) the context-bound mark sink after the node's record: the insert-once `taint-mark:<node key>:<source>` record in the parent's journal for an own mark of the child |
 | `PEnd` | (taint design, not built) the parent node that runs this flow gets its result, after the flow completed or through `Flow.ResolveHalt` of the halted node, which folds the child's marks into the parent's journal |
 | `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
@@ -1134,6 +1135,7 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `InheritedPolicylessNoTracked` | invariant | and no tracked node of a run under inherited marks and a policyless declaration ever runs (read-only flows run) |
 | `ParentMarksUp` | invariant | the parent node's result is recorded only with every own mark of the child already in the parent's journal: the sink runs on every drive, replay included, and `ResolveHalt` of the parent node folds the marks |
 | `ParentGated` | invariant | a parent node after the child is not claimed ungated while the child's own marks held when the parent node's result was recorded (its fold reads the sink's record) |
+| `OwnGateStable` | invariant | with `SeparateApprovers`, a recorded pass of the own gate is never superseded by a re-tally because of the instance (no circular exclusion: the instance excludes the approvers the own gate counted, and the own gate does not exclude the instance's deciders). The legitimate supersede through `ExcludePrincipal` is outside the model; the property is that the instance never causes one |
 | `NoEcho` | invariant | only the child's own marks go up; the inherited ones, which the parent passed down, are not sent back (list growth along a chain is not modelled: there is no list) |
 | `RefusedClean` | invariant | a refused node has a gate-reason record and no node record, no attempt, no approval request |
 
@@ -1155,7 +1157,7 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-taint-refuse` | ci | Refuse: T is refused on every drive, the Q route completes; one driver, 1 error reply, 1 crash | 5,389 | 1 s |
 | `flow-taint-resume` | ci | a run started under Gate is driven again under no policy, dropped sources or an added exemption (refused), or under the recorded ones; 1 crash | 360,808 | 27 s |
 | `flow-taint-marks` | ci | no declared source, a child of H learns a taint mark; one driver, 1 crash | 110,612 | 6 s |
-| `flow-taint-separate` | ci | `SeparateApprovers`: T has its own gate (1 of 2) and the instance excludes the approvers it counted, or is denied when none is left; 1 crash | 64,696 | 8 s |
+| `flow-taint-separate` | ci | `SeparateApprovers`: T has its own gate (1 of 2) and the instance excludes the approvers it counted, or is denied when none is left; 1 crash | 116,854 | 11 s |
 | `flow-taint-preexec` | ci | PreExec: T is tainted, has its own gate and the instance; the node gate's or the instance's approval can be revoked at any time after the gates pass (a crash between the tally and the claim included); 1 crash | 455,959 | 21 s |
 | `flow-taint-idempotent` | ci | idempotent nodes `H` and `T` (retry-safe, no claim, not read-only) read the source `E` and need the instance before their body; 1 crash | 216,730 | 16 s |
 | `flow-taint-inherit` | ci | the flow runs under inherited marks: every tracked node needs the instance with no declared source; a recovery pass may drive it directly; 1 crash | 11,915 | 1 s |
@@ -1205,7 +1207,7 @@ gate instance; `TaintGateHeld`), `taint-gate-unscoped` (the instance keyed per n
 (the fold ignores the taint-mark records; `TaintGateHeld`), `taint-refuse-as-skip` (a refusal recorded as a
 skip; `RefusedClean`), `taint-refuse-not-durable` (a recorded refusal read as a decision made, so the next
 drive runs the node; `TaintGateHeld`), `taint-resume-no-compare` (no comparison of the recorded
-declarations; `ResumeExact`), `taint-reuses-node-decider` (`SeparateApprovers` ignored; `SeparateHeld`),
+declarations; `ResumeExact`), `taint-reuses-node-decider` (`SeparateApprovers` ignored; `SeparateHeld`), `taint-separate-reverse` (the reverse exclusion: the own gate's re-tally also excludes the instance's deciders, so a person who decided both flips an already-passed own gate after the node ran; `OwnGateStable`),
 `taint-no-preexec` (no PreExec, so a revoked approval does not stop the node; `PreExecHeld`),
 `taint-preexec-ignores-revocation` (the PreExec's result ignored; `PreExecHeld`),
 `taint-preexec-own-only` (only the node gate's approval is checked, the instance's revoked approval does
