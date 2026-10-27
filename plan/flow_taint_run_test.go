@@ -532,3 +532,50 @@ func TestFlowTaint_RequireProvenanceIsForNewRunsOnly(t *testing.T) {
 		t.Fatalf("a new run stating nothing: %v", err)
 	}
 }
+
+// Both gates of a node, the node's own and its escalation instance, are certificate-bound: each has its
+// pre-execution check on the way to the body, in that order, and neither runs for a node that already ran.
+func TestFlowTaint_PreExecuteOfBothGatesTogether(t *testing.T) {
+	was := identitygate.Enabled.Load()
+	identitygate.Enabled.Store(true)
+	defer identitygate.Enabled.Store(was)
+	ctx := context.Background()
+	as, vf, exec, n, bad := certApprovers("ops", "risk")
+	own := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}
+	esc := &agent.TaintPolicy{Gate: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"risk"}}}
+	r := newTaintRun(t, flowOpts{policy: esc, pay: []NodeOption{Approval(own)}, verifiers: vf})
+	_, err := r.run()
+	as["ops"].decide(t, r.j, asPending(t, err), true)
+	_, err = r.run()
+	pend := asPending(t, err)
+	if pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("second pause at %q, want the instance", pend.ToolUseID)
+	}
+	as["risk"].decide(t, r.j, pend, true)
+	// Each pre-execution check is asked once on the way to the body (two checks for the one drive).
+	before := *n
+	if _, err := r.run(); err != nil || r.runs["pay"] != 1 {
+		t.Fatalf("the flow did not run to completion: %v, pay ran %d", err, r.runs["pay"])
+	}
+	if got := *n - before; got != 2 {
+		t.Errorf("%d pre-execution checks on the way to the body, want 2 (the node's gate and the instance's)", got)
+	}
+	// A revocation afterwards holds neither: the node ran, and asking its gates again checks nothing.
+	*exec = func(agent.CertDecision) agent.CertCheck {
+		*bad = true
+		return agent.CertCheck{Reason: agent.ReasonRevoked, Detail: "d"}
+	}
+	before = *n
+	ts := &taintState{flow: r.f.core.flowTaint(), standing: 2}
+	if err := runGate(ctx, r.j, "r1", r.f.core, ts, r.f.core.byName["pay"], "node:pay", 1); err != nil {
+		t.Fatalf("runGate on a node that ran: %v", err)
+	}
+	if *n != before {
+		t.Fatalf("a pre-execution check ran for a node whose result is recorded (%d -> %d)", before, *n)
+	}
+	for _, key := range []string{"node:pay", "node:pay:taint"} {
+		if _, ok, _ := r.j.Get(ctx, "r1", agent.ApprovalExecHoldStep(key, 0)); ok {
+			t.Errorf("a hold was written for %s after the node ran", key)
+		}
+	}
+}
