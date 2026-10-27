@@ -1,6 +1,9 @@
 package escalation
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSubject(t *testing.T) {
 	if got := ID("c1"); got != "c1#taint" {
@@ -94,4 +97,79 @@ func TestPlanKey(t *testing.T) {
 			t.Errorf("PlanKey(%q) = %q, %q, true; want not a plan key", bad, node, step)
 		}
 	}
+}
+
+// The keys that existed before the instance of a node did parse and classify exactly as they did: the
+// old parser and the old Base, kept here as they were, agree with the current ones on every string built
+// from the pieces a key is made of, except on the one shape that is new (a node key and ":taint").
+func TestExistingKeysAreUnchanged(t *testing.T) {
+	oldPlanKey := func(name string) (node, step string, ok bool) {
+		rest, ok := strings.CutPrefix(name, "node:")
+		if !ok {
+			return "", "", false
+		}
+		body := rest
+		if it, ok := strings.CutPrefix(rest, "iter:"); ok {
+			if digits, after, ok := strings.Cut(it, ":"); ok && isIterNumber(digits) {
+				body = after
+			}
+		}
+		n, tail, scoped := strings.Cut(body, ":")
+		if n == "" {
+			return "", "", false
+		}
+		nodeKey := name[:len(name)-len(body)] + n
+		if !scoped {
+			return nodeKey, "", true
+		}
+		step, ok = strings.CutPrefix(":"+tail, ":step:")
+		if !ok || step == "" {
+			return "", "", false
+		}
+		return nodeKey, step, true
+	}
+	oldBase := func(subject string) (string, bool) {
+		if strings.HasPrefix(subject, "node:") {
+			return "", false
+		}
+		return strings.CutSuffix(subject, "#taint")
+	}
+	pieces := []string{"node", "iter", "step", "taint", "0", "3", "03", "x", "#", "", "c1"}
+	var keys []string
+	var build func(prefix string, depth int)
+	build = func(prefix string, depth int) {
+		keys = append(keys, prefix)
+		if depth == 0 {
+			return
+		}
+		for _, p := range pieces {
+			build(prefix+p, depth-1)
+			build(prefix+":"+p, depth-1)
+		}
+	}
+	build("", 4)
+	for _, k := range keys {
+		wn, ws, wok := oldPlanKey(k)
+		gn, gs, gok := PlanKey(k)
+		if wn != gn || ws != gs || wok != gok {
+			t.Fatalf("PlanKey(%q) = %q, %q, %v; the existing parser says %q, %q, %v", k, gn, gs, gok, wn, ws, wok)
+		}
+		wb, wbok := oldBase(k)
+		gb, gbok := Base(k)
+		newInstance := strings.HasPrefix(k, "node:") && gbok
+		if !newInstance && (wb != gb || wbok != gbok) {
+			t.Fatalf("Base(%q) = %q, %v; the existing Base says %q, %v", k, gb, gbok, wb, wbok)
+		}
+		if newInstance {
+			// The new shape is a node key and ":taint", and nothing else.
+			if _, _, isKey := PlanKey(k); isKey || !IsNodeKey(gb) || gb+NodeSuffix != k {
+				t.Fatalf("Base(%q) = %q, true: not a node key and :taint", k, gb)
+			}
+		}
+		// A call's instance is its ID and "#taint", as before.
+		if !strings.HasPrefix(k, "node:") && ID(k) != k+"#taint" {
+			t.Fatalf("ID(%q) = %q", k, ID(k))
+		}
+	}
+	t.Logf("compared %d keys", len(keys))
 }

@@ -191,3 +191,30 @@ func journalhookStepForTest(ctx context.Context, j *Journal, runID, name string)
 		return json.RawMessage(`1`), nil
 	})
 }
+
+// The standing of the gates that existed before the instance of a node did is what it was: a node key is
+// decided by its own record (a node named with a '#' included), and a tool call's ID by a tool result, never
+// by a value record that happens to carry its name.
+func TestEvaluateGate_ExistingSubjectsAreUnchanged(t *testing.T) {
+	value := func(name string) Record { return Record{Name: name, Kind: StepValue, Result: json.RawMessage(`1`)} }
+	for _, c := range []struct {
+		subject string
+		recs    []Record
+		ran     bool
+	}{
+		{"node:pay", []Record{value("node:pay")}, true},
+		{"node:iter:2:pay", []Record{value("node:iter:2:pay")}, true},
+		{"node:pay#taint", []Record{value("node:pay#taint")}, true}, // a node whose name holds '#'
+		{"node:pay", []Record{value("node:iter:2:pay")}, false},
+		{"node:pay", []Record{value("node:pay:step:fetch")}, false},
+		{"c1", []Record{value("c1")}, false}, // not a plan key: a value record is not a tool's result
+		{"c1#taint", []Record{value("c1")}, false},
+		{"c1", []Record{{Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`1`)}}, true},
+		{"c1#taint", []Record{{Kind: StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`1`)}}, false},
+	} {
+		st := EvaluateGateAfter(c.recs, ApprovalSubject{RunID: "r1", ToolUseID: c.subject, ToolName: "t"}, SingleApproval(), nil, "")
+		if st.Ran != c.ran {
+			t.Errorf("subject %q with %v: Ran = %v, want %v", c.subject, c.recs, st.Ran, c.ran)
+		}
+	}
+}
