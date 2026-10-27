@@ -45,7 +45,8 @@ type Change struct {
 	// adding or shortening one a strengthening (the gate fails closed sooner). Empty when the
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
-	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
+	// Weakening says what a weakened change weakened: "exposure" (a side-effecting node newly reads untrusted
+	// data and is exempt from the escalation gate, or a node no longer declares a source), "gate" (an approval policy: the gate was
 	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (a node
 	// newly reachable without passing an approval gate: one every path reached through a gate
 	// before, whatever its safety, or a new or newly wired-in effect), "safety" (a node's safety
@@ -57,6 +58,9 @@ type Change struct {
 	// summary, when set, is the Weakened entry for this change (an assert line that stopped
 	// holding says why, which a Details cut at its first parenthesis would lose).
 	summary string
+	// taint marks a change that reports the taint of a node beside its other changes, so the counts of
+	// changed nodes do not count the node twice.
+	taint bool
 }
 
 // String is the change as one line: "changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)".
@@ -99,6 +103,9 @@ type DiffView struct {
 	// OldFile and NewFile are the SHA-256 of the description file of each side, when it has one.
 	OldFile string `json:"old_file,omitempty"`
 	NewFile string `json:"new_file,omitempty"`
+	// Fallback is also set when the taint of the two sides could not be compared (a node newly reads untrusted
+	// data and the flow's policy is not given): the diff is then not certified.
+	//
 	// Fallback is set when a side checked against a Registry or a description had errors, so the typed
 	// comparison had nothing sound to read: the diff was made structurally, as it is without them,
 	// which never reads a gate as stronger than it can tell. It says so in words and the diff is not
@@ -279,8 +286,22 @@ func BuildDiff(d Diff) (*DiffView, error) {
 // whichever sides it was made from.
 func (v *DiffView) finish(o, n plan.ConfigReport, oldSafety, newSafety map[string]string) {
 	v.Changes = diffChanges(o, n, oldSafety, newSafety)
+	renRev := map[string]string{}
+	for from, to := range renamedNodes(o, n) {
+		renRev[to] = from
+	}
+	tc, uncomparable := exposureChanges(o, n, renRev)
+	v.Changes = append(v.Changes, tc...)
+	if len(uncomparable) > 0 {
+		note := uncomparableNote(uncomparable)
+		if v.Fallback != "" {
+			note = v.Fallback + "; " + strings.TrimPrefix(note, "not certified: ")
+		}
+		v.Fallback = note
+	}
 	for _, c := range v.Changes {
 		switch {
+		case c.taint:
 		case c.What == "node" && c.Change == "added":
 			v.Counts.NodesAdded++
 		case c.What == "node" && c.Change == "removed":

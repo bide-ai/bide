@@ -165,6 +165,8 @@ type ConfigReport struct {
 	Assertions []AssertionResult
 
 	Gated map[string]bool
+
+	Taint map[string]NodeTaint
 }
 ```
 
@@ -272,6 +274,7 @@ InspectOption changes what InspectConfig and InspectConfigDescribed check.
 **Constructors and functions**
 
 - `func AllowUnusedBlocks() InspectOption`: AllowUnusedBlocks makes a registered block the config does not use no problem.
+- `func InspectTaintPolicy(p agent.TaintPolicy) InspectOption`: InspectTaintPolicy gives InspectConfig the taint policy of the flow, which the config cannot carry (it is Go: Builder.WithTaintPolicy).
 
 ## type LoadOption
 
@@ -346,6 +349,26 @@ NodeSafety is how a node behaves when a crash cuts it off mid-run, as a risk map
 **Methods**
 
 - `func (s NodeSafety) RerunsOnCrash() bool`: RerunsOnCrash reports whether a resume re-runs a node of this class that a crash cut off (read-only and idempotent); a side effect halts and asks for the outcome instead, and an unknown class is not known to do either.
+
+## type NodeTaint
+
+```go
+type NodeTaint struct {
+	Verdict string `json:"verdict"`
+
+	Declares []string `json:"declares,omitempty"`
+
+	Sources []string `json:"sources,omitempty"`
+
+	Path []string `json:"path,omitempty"`
+
+	Exempt string `json:"exempt,omitempty"`
+
+	Reason string `json:"reason,omitempty"`
+}
+```
+
+NodeTaint is the static taint verdict on one node.
 
 ## type PredicateDescription
 

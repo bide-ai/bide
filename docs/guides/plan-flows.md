@@ -868,6 +868,37 @@ holds is the one made with the real Registry. A registered block the config does
 given, so it admits at most 20000 names and 4 MiB of names in all (about 25 MB), and one description at most a quarter of that; past that the check reports an error
 and a long-lived host must restart to check new type names.
 
+### Taint in a check
+
+`plan.ConfigReport.Taint` is the static taint verdict on each node: the may-version of the rule the engine will enforce
+(design: [flow taint](../design/flow-taint.md), sections 1 and 2). A node may read a declared source when the source
+runs before it in the engine's own order (the order `Build` and `Run` use), or when both are in one loop's body (the
+iterations after the first see the whole body, a node's own result included). Switch arms are all treated as live,
+so a node after an arm that is never taken still reads its source: an over-approximation. A verdict is one of
+`reads untrusted`, `escalates` (it can have a side effect, is not exempt and the policy has a Gate), `refused` (the
+same under Refuse), `exempt`, `no declared source before it`, or `unknown`. `Sources` lists the sources, `Path` a
+shortest edge path from a node that declares one, `Declares` what the node itself introduces (its block's sources and
+the config's `untrusted` key), and `Reason` what the verdict cannot know.
+
+The policy is Go, not config: pass `plan.InspectTaintPolicy(policy)` to `InspectConfig`, or set `TaintPolicy` in the
+description `InspectConfigDescribed` reads (an explicit option wins). Without a policy a node that can have a side
+effect and reads a source is `reads untrusted` with the reason "taint policy not given": the view never says it
+escalates. `plan.InspectTaintPolicy(agent.TaintPolicy{})`, the zero policy, states that the flow has no policy: such
+a node is `reads untrusted` with the reason "no taint policy: nothing gates its side effect". A policy that is merely
+not given is never read as none. Without a Registry or a description that carries the declarations (version 2), every node is `unknown`
+and shows only the sources the config itself states; a report with errors has no `Taint`. What the view cannot see
+is stated in the verdict and never as a clean result: a source a block reads without declaring it, a run whose
+input is declared untrusted, and the taint of an agent or nested flow a block runs.
+
+`bide check` prints the section (`taint: 2 nodes may read untrusted data (1 escalates)` and a line per node), or
+one line, `taint: not known without -blocks`, and `bide check -diff` compares it: a node that can have a side effect
+and newly reads a source is listed when it is covered, that is the policy gates or refuses it, or it is exempt
+("now reads inbound-email, escalates", "exempt (fixed amount)"); it is weakened (`UNTRUSTED EXPOSURE WIDENED`) when
+the policy is known to be absent, and the same for a node that read a source covered and is no longer covered.
+When the policy is not given on the new side the diff says the taint could not be compared and is not certified
+(like a diff with errors), whatever the old side gives. A node that no longer declares a source is weakened, and one
+that newly declares a source is listed as strengthened. A node's own approval gate does not cover this exposure.
+
 ## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.
@@ -881,7 +912,8 @@ and a long-lived host must restart to check new type names.
 - A flow can carry a [taint policy](untrusted-content.md#plan-flows) (`Builder.WithTaintPolicy`, experimental,
   Go only): a node that can have a side effect, run after the run has read untrusted content, needs an escalation
   gate on `node:<name>:taint` or is refused; with `SeparateApprovers` the approvers its own gate counted do not
-  count on that instance. `bide check` and the editor do not show it yet. A plan
+  count on that instance. `bide check` and `plan.InspectConfig` show the static view
+  (`ConfigReport.Taint`, see [Taint in a check](#taint-in-a-check)). A plan
   node may carry a `#` in its name; its subject is `node:<name>`, never an escalation instance.
 - A tool that carries [amount caps](amount-caps.md) (`agent.WithCaps`) cannot be a flow block:
   `Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` naming the tool, because a

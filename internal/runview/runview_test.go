@@ -1067,7 +1067,7 @@ func TestCheckAssertions(t *testing.T) {
 	}
 	out.Reset()
 	gated := gatedPolicyConfig
-	if Check(&out, Config{Name: "p.json", Data: []byte(gated)}) || out.String() != "p.json: 3 assertions: 3 hold, 0 violated, 0 undecided or invalid\n" {
+	if Check(&out, Config{Name: "p.json", Data: []byte(gated)}) || out.String() != "p.json: 3 assertions: 3 hold, 0 violated, 0 undecided or invalid\np.json: taint: not known without -blocks\n" {
 		t.Fatalf("holding assertions: %q", out.String())
 	}
 	out.Reset()

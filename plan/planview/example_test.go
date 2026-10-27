@@ -31,6 +31,7 @@ func Example() {
 	}
 	planview.Check(os.Stdout, "orders.json", config, reg)
 	// Output:
+	// orders.json: taint: not known without -blocks
 	// orders.json:classify->done: edge "classify" -> "done" connects planview_test.Order to string (types must match exactly)
 }
 

@@ -211,7 +211,7 @@ func TestDescriptionIsLabelled(t *testing.T) {
 	}
 	out.Reset()
 	Check(&out, Config{Name: "pay.json", Data: []byte(swapCfg("post")), Registry: reg})
-	if out.Len() != 0 {
+	if out.String() != "pay.json: taint: no node declares an untrusted source (a source that is not declared is not shown)\n" {
 		t.Errorf("a Registry check printed %q", out.String())
 	}
 	both := Config{Name: "pay.json", Data: []byte(swapCfg("post")), Registry: reg, Description: &plan.RegistryDescription{Version: 1}}
