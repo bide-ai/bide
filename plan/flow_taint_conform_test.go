@@ -167,3 +167,28 @@ func TestFlowTaintConform_DeclarationsAreTheFlows(t *testing.T) {
 		t.Errorf("no policy: %q, want the escalation gate records named as the flow's own to have", diffs)
 	}
 }
+
+// A run whose journal holds a not-started marker, which Conform leaves out of its replay, is judged on the
+// history as the engine read it: the positions the recorded reasons name are the same.
+func TestFlowTaintConform_UsesTheUnfilteredHistory(t *testing.T) {
+	ctx := context.Background()
+	r, j := completedTaintRun(t)
+	// The reasons the engine recorded name positions in the journal; a Conform that filtered first would
+	// recompute other positions and find two reasons for one mark. It must still conform.
+	if ok, diffs, err := r.f.Conform(ctx, j, "r1"); err != nil || !ok {
+		t.Fatalf("Conform = %v, %q, %v", ok, diffs, err)
+	}
+	hist, err := j.History(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var filtered int
+	for _, rec := range hist {
+		if rec.Kind == agent.StepHeader || rec.Kind == agent.StepNotStarted {
+			filtered++
+		}
+	}
+	if filtered == 0 {
+		t.Fatal("the run's history has no record Conform filters out; the test does not test the filtering")
+	}
+}

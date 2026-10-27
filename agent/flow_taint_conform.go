@@ -99,7 +99,7 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 			continue
 		}
 		s, _ := safeties[name].(Safety)
-		marks, err := flowReadSet(recs, decls, i, nil)
+		marks, err := flowReadSet(recs, decls, i, r.Name, nil)
 		if err != nil {
 			diffs = append(diffs, r.Name+" (the read set could not be recomputed: "+err.Error()+")")
 			continue

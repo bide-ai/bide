@@ -83,6 +83,9 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
 	}
+	// The taint obligations are recomputed over the history as the engine read it: a position is an index into
+	// it, so a copy without the header or the not-started markers would give other positions.
+	history := recs
 	recs = slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool {
 		return r.Kind == agent.StepHeader || r.Kind == agent.StepNotStarted
 	})
@@ -353,7 +356,7 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	for _, n := range c.nodes {
 		safeties[n.name] = n.safety
 	}
-	diffs = append(diffs, journalhook.FlowTaintConform(recs, c.flowTaint(), safeties)...)
+	diffs = append(diffs, journalhook.FlowTaintConform(history, c.flowTaint(), safeties)...)
 
 	return len(diffs) == 0, diffs, nil
 }

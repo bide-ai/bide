@@ -156,7 +156,7 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 			break
 		}
 	}
-	marks, err := flowReadSet(recs, decls, before, nil)
+	marks, err := flowReadSet(recs, decls, before, nodeKey, nil)
 	if err != nil {
 		return journalhook.FlowTaintDecision{}, err
 	}
