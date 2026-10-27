@@ -110,7 +110,7 @@ ASSUME Bug \in {"none", "NestedUnscoped", "LoopSwitchUnscoped", "ResolveAnyNode"
                 "ReadSetIgnoresOrder", "ReadSetResetsPerIteration", "TaintMarkIgnored",
                 "RefuseAsSkip", "RefuseNotDurable", "ResumeNoCompare", "TaintReusesNodeDecider",
                 "NoPreExec", "PreExecIgnoresRevocation", "PreExecOwnOnly", "RunBeforeRefusal",
-                "IdempotentUngated"}
+                "IdempotentUngated", "PreExecOnReplay"}
 
 \* The declarations a run records in run:start and a drive runs under (A2, "Declarations are
 \* recorded"): the policy, the exempt nodes, the declared sources.
@@ -198,6 +198,9 @@ variables
   preN = [d \in Drivers |-> FALSE], preT = [d \in Drivers |-> FALSE],   \* PreExec ran for it
   rvN = [d \in Drivers |-> FALSE], rvT = [d \in Drivers |-> FALSE],     \* and saw it revoked
   badPre  = FALSE,
+  \* Ghosts: a recorded node refused by a PreExec (replays are not blocked); a recorded node replayed while
+  \* an approval was revoked (vacuity of that check).
+  badReplay = FALSE, sawReplayRev = FALSE,
   badOrder = FALSE;
 
 define
@@ -324,7 +327,10 @@ GPause:
   end if;
 NGet:
   \* A recorded result replays without running the body (one point read).
-  if res[key].rec then
+  if Bug = "PreExecOnReplay" /\ Revocable /\ (key[1] \in Gated \/ tneed) then
+    goto TPre;       \* PreExecOnReplay: the PreExec runs before the replay check
+  elsif res[key].rec then
+    sawReplayRev := sawReplayRev \/ revN \/ revT;
     nval[self] := res[key].v; return;
   elsif Revocable /\ (key[1] \in Gated \/ tneed) then
     goto TPre;       \* the PreExec runs right before the body executes, never on a replay
@@ -437,13 +443,17 @@ TPre:
   \* gate's approval is checked, not the instance's.)
   if Bug # "NoPreExec" /\ ((revN /\ key[1] \in Gated) \/ (revT /\ tneed /\ Bug # "PreExecOwnOnly"))
      /\ Bug # "PreExecIgnoresRevocation" then
-    preN[self] := TRUE; preT[self] := TRUE; failed[self] := "error"; return;
+    preN[self] := TRUE; preT[self] := TRUE; badReplay := badReplay \/ res[key].rec;
+    failed[self] := "error"; return;
   else
     if Bug # "NoPreExec" then
       preN[self] := TRUE; preT[self] := TRUE;
       rvN[self] := revN /\ key[1] \in Gated; rvT[self] := revT /\ tneed;
     end if;
-    if key[1] \notin SideEffects then goto NBody; else goto NClaim; end if;
+    if res[key].rec then nval[self] := res[key].v; return;
+    elsif key[1] \notin SideEffects then goto NBody;
+    else goto NClaim;
+    end if;
   end if;
 end procedure;
 
@@ -594,7 +604,7 @@ VARIABLES started, res, mk, sw, done, tally, req, dec, nval, choice, failed,
           reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, cur, 
           dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, ttally, 
           ncnt, badTaint, badResume, revN, revT, preN, preT, rvN, rvT, badPre, 
-          badOrder, pc, stack
+          badReplay, sawReplayRev, badOrder, pc, stack
 
 (* define statement *)
 SKey(i) == IF Bug = "LoopSwitchUnscoped" THEN <<"S", 0>> ELSE <<"S", i>>
@@ -677,8 +687,8 @@ vars == << started, res, mk, sw, done, tally, req, dec, nval, choice, failed,
            reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, 
            cur, dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, 
            ttally, ncnt, badTaint, badResume, revN, revT, preN, preT, rvN, 
-           rvT, badPre, badOrder, pc, stack, key, bodyVal, tneed, ckey, val, 
-           name, it, out, term, rk, rv, rf >>
+           rvT, badPre, badReplay, sawReplayRev, badOrder, pc, stack, key, 
+           bodyVal, tneed, ckey, val, name, it, out, term, rk, rv, rf >>
 
 ProcSet == (Drivers) \cup (ResolverSet) \cup (ApproverSet)
 
@@ -724,6 +734,8 @@ Init == (* Global variables *)
         /\ rvN = [d \in Drivers |-> FALSE]
         /\ rvT = [d \in Drivers |-> FALSE]
         /\ badPre = FALSE
+        /\ badReplay = FALSE
+        /\ sawReplayRev = FALSE
         /\ badOrder = FALSE
         (* Procedure Node *)
         /\ key = [ self \in ProcSet |-> defaultInitValue]
@@ -774,8 +786,9 @@ GRead(self) == /\ pc[self] = "GRead"
                                firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                                ord, tm, mord, seen, refused, treq, tdec, 
                                ttally, ncnt, badTaint, badResume, revN, revT, 
-                               badPre, badOrder, stack, key, bodyVal, ckey, 
-                               val, name, it, out, term, rk, rv, rf >>
+                               badPre, badReplay, sawReplayRev, badOrder, 
+                               stack, key, bodyVal, ckey, val, name, it, out, 
+                               term, rk, rv, rf >>
 
 GCount(self) == /\ pc[self] = "GCount"
                 /\ LET y == GYes(GKey(key[self])) IN
@@ -816,8 +829,9 @@ GCount(self) == /\ pc[self] = "GCount"
                                 badFire, rdecl, cur, dd, jn, ord, tm, mord, 
                                 seen, grec, refused, treq, tdec, ttally, 
                                 badTaint, badResume, revN, revT, preN, preT, 
-                                rvN, rvT, badPre, badOrder, ckey, val, name, 
-                                it, out, term, rk, rv, rf >>
+                                rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                badOrder, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 GPause(self) == /\ pc[self] = "GPause"
                 /\ IF tally[GKey(key[self])] = "deny"
@@ -836,30 +850,38 @@ GPause(self) == /\ pc[self] = "GPause"
                                 firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                                 ord, tm, mord, seen, grec, refused, treq, tdec, 
                                 ttally, ncnt, badTaint, badResume, revN, revT, 
-                                preN, preT, rvN, rvT, badPre, badOrder, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                preN, preT, rvN, rvT, badPre, badReplay, 
+                                sawReplayRev, badOrder, ckey, val, name, it, 
+                                out, term, rk, rv, rf >>
 
 NGet(self) == /\ pc[self] = "NGet"
-              /\ IF res[key[self]].rec
-                    THEN /\ nval' = [nval EXCEPT ![self] = res[key[self]].v]
-                         /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                         /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
-                         /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
-                         /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
-                         /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                    ELSE /\ IF Revocable /\ (key[self][1] \in Gated \/ tneed[self])
-                               THEN /\ pc' = [pc EXCEPT ![self] = "TPre"]
-                               ELSE /\ IF key[self][1] \notin SideEffects
-                                          THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
-                                          ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
-                         /\ UNCHANGED << nval, stack, key, bodyVal, tneed >>
+              /\ IF Bug = "PreExecOnReplay" /\ Revocable /\ (key[self][1] \in Gated \/ tneed[self])
+                    THEN /\ pc' = [pc EXCEPT ![self] = "TPre"]
+                         /\ UNCHANGED << nval, sawReplayRev, stack, key, 
+                                         bodyVal, tneed >>
+                    ELSE /\ IF res[key[self]].rec
+                               THEN /\ sawReplayRev' = (sawReplayRev \/ revN \/ revT)
+                                    /\ nval' = [nval EXCEPT ![self] = res[key[self]].v]
+                                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                                    /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                    /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                                    /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                               ELSE /\ IF Revocable /\ (key[self][1] \in Gated \/ tneed[self])
+                                          THEN /\ pc' = [pc EXCEPT ![self] = "TPre"]
+                                          ELSE /\ IF key[self][1] \notin SideEffects
+                                                     THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
+                                                     ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
+                                    /\ UNCHANGED << nval, sawReplayRev, stack, 
+                                                    key, bodyVal, tneed >>
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               choice, failed, reply, ambig, crashes, fired, 
                               firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                               ord, tm, mord, seen, grec, refused, treq, tdec, 
                               ttally, ncnt, badTaint, badResume, revN, revT, 
-                              preN, preT, rvN, rvT, badPre, badOrder, ckey, 
-                              val, name, it, out, term, rk, rv, rf >>
+                              preN, preT, rvN, rvT, badPre, badReplay, 
+                              badOrder, ckey, val, name, it, out, term, rk, rv, 
+                              rf >>
 
 NClaim(self) == /\ pc[self] = "NClaim"
                 /\ LET was == mk[key[self]] IN
@@ -905,7 +927,8 @@ NClaim(self) == /\ pc[self] = "NClaim"
                                 badFire, rdecl, cur, dd, jn, ord, tm, mord, 
                                 seen, grec, refused, treq, tdec, ttally, ncnt, 
                                 badResume, revN, revT, preN, preT, rvN, rvT, 
-                                ckey, val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, ckey, val, name, it, 
+                                out, term, rk, rv, rf >>
 
 NBody(self) == /\ pc[self] = "NBody"
                /\ \E x \in {0, 1}:
@@ -943,8 +966,9 @@ NBody(self) == /\ pc[self] = "NBody"
                                nval, choice, failed, reply, ambig, crashes, 
                                firedN, badRoute, rdecl, cur, dd, ord, seen, 
                                grec, refused, treq, tdec, ttally, ncnt, revN, 
-                               revT, preN, preT, rvN, rvT, stack, key, tneed, 
-                               ckey, val, name, it, out, term, rk, rv, rf >>
+                               revT, preN, preT, rvN, rvT, badReplay, 
+                               sawReplayRev, stack, key, tneed, ckey, val, 
+                               name, it, out, term, rk, rv, rf >>
 
 NNested(self) == /\ pc[self] = "NNested"
                  /\ IF ~res[NKey(key[self][2])].rec
@@ -958,9 +982,10 @@ NNested(self) == /\ pc[self] = "NNested"
                                  badRoute, badFire, rdecl, cur, dd, jn, ord, 
                                  tm, mord, seen, grec, refused, treq, tdec, 
                                  ttally, ncnt, badTaint, badResume, revN, revT, 
-                                 preN, preT, rvN, rvT, badPre, badOrder, stack, 
-                                 key, bodyVal, tneed, ckey, val, name, it, out, 
-                                 term, rk, rv, rf >>
+                                 preN, preT, rvN, rvT, badPre, badReplay, 
+                                 sawReplayRev, badOrder, stack, key, bodyVal, 
+                                 tneed, ckey, val, name, it, out, term, rk, rv, 
+                                 rf >>
 
 NRecord(self) == /\ pc[self] = "NRecord"
                  /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -993,8 +1018,8 @@ NRecord(self) == /\ pc[self] = "NRecord"
                                  badFire, rdecl, cur, dd, tm, mord, grec, 
                                  refused, treq, tdec, ttally, ncnt, badTaint, 
                                  badResume, revN, revT, preN, preT, rvN, rvT, 
-                                 badPre, badOrder, ckey, val, name, it, out, 
-                                 term, rk, rv, rf >>
+                                 badPre, badReplay, sawReplayRev, badOrder, 
+                                 ckey, val, name, it, out, term, rk, rv, rf >>
 
 TRefuse(self) == /\ pc[self] = "TRefuse"
                  /\ refused' = [refused EXCEPT ![key[self]] = TRUE]
@@ -1016,8 +1041,9 @@ TRefuse(self) == /\ pc[self] = "TRefuse"
                                  badRoute, badFire, rdecl, cur, dd, tm, mord, 
                                  seen, grec, treq, tdec, ttally, ncnt, 
                                  badTaint, badResume, revN, revT, preN, preT, 
-                                 rvN, rvT, badPre, badOrder, ckey, val, name, 
-                                 it, out, term, rk, rv, rf >>
+                                 rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                 badOrder, ckey, val, name, it, out, term, rk, 
+                                 rv, rf >>
 
 TGate(self) == /\ pc[self] = "TGate"
                /\ IF ttally[TKey(key[self])] # None
@@ -1030,9 +1056,10 @@ TGate(self) == /\ pc[self] = "TGate"
                                fired, firedN, badRoute, badFire, rdecl, cur, 
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                tdec, ttally, ncnt, badTaint, badResume, revN, 
-                               revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                               stack, key, bodyVal, tneed, ckey, val, name, it, 
-                               out, term, rk, rv, rf >>
+                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                               sawReplayRev, badOrder, stack, key, bodyVal, 
+                               tneed, ckey, val, name, it, out, term, rk, rv, 
+                               rf >>
 
 TCount(self) == /\ pc[self] = "TCount"
                 /\ LET y == TYes(key[self]) IN
@@ -1072,8 +1099,9 @@ TCount(self) == /\ pc[self] = "TCount"
                                 badFire, rdecl, cur, dd, jn, ord, tm, mord, 
                                 seen, grec, refused, treq, tdec, ncnt, 
                                 badTaint, badResume, revN, revT, preN, preT, 
-                                rvN, rvT, badPre, badOrder, ckey, val, name, 
-                                it, out, term, rk, rv, rf >>
+                                rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                badOrder, ckey, val, name, it, out, term, rk, 
+                                rv, rf >>
 
 TPause(self) == /\ pc[self] = "TPause"
                 /\ IF ttally[TKey(key[self])] = "deny"
@@ -1090,21 +1118,23 @@ TPause(self) == /\ pc[self] = "TPause"
                                 firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                                 ord, tm, mord, seen, grec, refused, treq, tdec, 
                                 ttally, ncnt, badTaint, badResume, revN, revT, 
-                                preN, preT, rvN, rvT, badPre, badOrder, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                preN, preT, rvN, rvT, badPre, badReplay, 
+                                sawReplayRev, badOrder, ckey, val, name, it, 
+                                out, term, rk, rv, rf >>
 
 TPre(self) == /\ pc[self] = "TPre"
               /\ IF Bug # "NoPreExec" /\ ((revN /\ key[self][1] \in Gated) \/ (revT /\ tneed[self] /\ Bug # "PreExecOwnOnly"))
                     /\ Bug # "PreExecIgnoresRevocation"
                     THEN /\ preN' = [preN EXCEPT ![self] = TRUE]
                          /\ preT' = [preT EXCEPT ![self] = TRUE]
+                         /\ badReplay' = (badReplay \/ res[key[self]].rec)
                          /\ failed' = [failed EXCEPT ![self] = "error"]
                          /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                          /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
                          /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                          /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                         /\ UNCHANGED << rvN, rvT >>
+                         /\ UNCHANGED << nval, rvN, rvT >>
                     ELSE /\ IF Bug # "NoPreExec"
                                THEN /\ preN' = [preN EXCEPT ![self] = TRUE]
                                     /\ preT' = [preT EXCEPT ![self] = TRUE]
@@ -1112,17 +1142,26 @@ TPre(self) == /\ pc[self] = "TPre"
                                     /\ rvT' = [rvT EXCEPT ![self] = revT /\ tneed[self]]
                                ELSE /\ TRUE
                                     /\ UNCHANGED << preN, preT, rvN, rvT >>
-                         /\ IF key[self][1] \notin SideEffects
-                               THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
-                               ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
-                         /\ UNCHANGED << failed, stack, key, bodyVal, tneed >>
+                         /\ IF res[key[self]].rec
+                               THEN /\ nval' = [nval EXCEPT ![self] = res[key[self]].v]
+                                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                                    /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                    /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                                    /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                               ELSE /\ IF key[self][1] \notin SideEffects
+                                          THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
+                                          ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
+                                    /\ UNCHANGED << nval, stack, key, bodyVal, 
+                                                    tneed >>
+                         /\ UNCHANGED << failed, badReplay >>
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
-                              nval, choice, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, rdecl, cur, dd, jn, 
-                              ord, tm, mord, seen, grec, refused, treq, tdec, 
-                              ttally, ncnt, badTaint, badResume, revN, revT, 
-                              badPre, badOrder, ckey, val, name, it, out, term, 
-                              rk, rv, rf >>
+                              choice, reply, ambig, crashes, fired, firedN, 
+                              badRoute, badFire, rdecl, cur, dd, jn, ord, tm, 
+                              mord, seen, grec, refused, treq, tdec, ttally, 
+                              ncnt, badTaint, badResume, revN, revT, badPre, 
+                              sawReplayRev, badOrder, ckey, val, name, it, out, 
+                              term, rk, rv, rf >>
 
 Node(self) == GRead(self) \/ GCount(self) \/ GPause(self) \/ NGet(self)
                  \/ NClaim(self) \/ NBody(self) \/ NNested(self)
@@ -1161,8 +1200,8 @@ CDo(self) == /\ pc[self] = "CDo"
                              rdecl, cur, dd, jn, ord, tm, mord, seen, grec, 
                              refused, treq, tdec, ttally, ncnt, badTaint, 
                              badResume, revN, revT, preN, preT, rvN, rvT, 
-                             badPre, badOrder, key, bodyVal, tneed, it, out, 
-                             term, rk, rv, rf >>
+                             badPre, badReplay, sawReplayRev, badOrder, key, 
+                             bodyVal, tneed, it, out, term, rk, rv, rf >>
 
 CRoute(self) == /\ pc[self] = "CRoute"
                 /\ choice' = [choice EXCEPT ![self] = sw[ckey[self]]]
@@ -1180,8 +1219,9 @@ CRoute(self) == /\ pc[self] = "CRoute"
                                 firedN, badFire, rdecl, cur, dd, jn, ord, tm, 
                                 mord, seen, grec, refused, treq, tdec, ttally, 
                                 ncnt, badTaint, badResume, revN, revT, preN, 
-                                preT, rvN, rvT, badPre, badOrder, key, bodyVal, 
-                                tneed, it, out, term, rk, rv, rf >>
+                                preT, rvN, rvT, badPre, badReplay, 
+                                sawReplayRev, badOrder, key, bodyVal, tneed, 
+                                it, out, term, rk, rv, rf >>
 
 Choose(self) == CDo(self) \/ CRoute(self)
 
@@ -1204,8 +1244,9 @@ Begin(self) == /\ pc[self] = "Begin"
                                badFire, rdecl, dd, jn, ord, tm, mord, grec, 
                                refused, treq, tdec, ttally, ncnt, badTaint, 
                                badResume, revN, revT, preN, preT, rvN, rvT, 
-                               badPre, badOrder, stack, key, bodyVal, tneed, 
-                               ckey, val, name, rk, rv, rf >>
+                               badPre, badReplay, sawReplayRev, badOrder, 
+                               stack, key, bodyVal, tneed, ckey, val, name, rk, 
+                               rv, rf >>
 
 BeginStart(self) == /\ pc[self] = "BeginStart"
                     /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1238,9 +1279,10 @@ BeginStart(self) == /\ pc[self] = "BeginStart"
                                     badFire, cur, jn, ord, tm, mord, seen, 
                                     grec, refused, treq, tdec, ttally, ncnt, 
                                     badTaint, badResume, revN, revT, preN, 
-                                    preT, rvN, rvT, badPre, badOrder, stack, 
-                                    key, bodyVal, tneed, ckey, val, name, it, 
-                                    out, term, rk, rv, rf >>
+                                    preT, rvN, rvT, badPre, badReplay, 
+                                    sawReplayRev, badOrder, stack, key, 
+                                    bodyVal, tneed, ckey, val, name, it, out, 
+                                    term, rk, rv, rf >>
 
 RunE(self) == /\ pc[self] = "RunE"
               /\ /\ key' = [key EXCEPT ![self] = <<"E", 0>>]
@@ -1258,8 +1300,9 @@ RunE(self) == /\ pc[self] = "RunE"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              ckey, val, name, it, out, term, rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, ckey, val, name, it, out, 
+                              term, rk, rv, rf >>
 
 AfterE(self) == /\ pc[self] = "AfterE"
                 /\ IF failed[self] # None
@@ -1271,8 +1314,9 @@ AfterE(self) == /\ pc[self] = "AfterE"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 ChooseE(self) == /\ pc[self] = "ChooseE"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = <<"E", 0>>]
@@ -1291,8 +1335,8 @@ ChooseE(self) == /\ pc[self] = "ChooseE"
                                  dd, jn, ord, tm, mord, seen, grec, refused, 
                                  treq, tdec, ttally, ncnt, badTaint, badResume, 
                                  revN, revT, preN, preT, rvN, rvT, badPre, 
-                                 badOrder, key, bodyVal, tneed, it, out, term, 
-                                 rk, rv, rf >>
+                                 badReplay, sawReplayRev, badOrder, key, 
+                                 bodyVal, tneed, it, out, term, rk, rv, rf >>
 
 AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                       /\ IF failed[self] # None
@@ -1307,9 +1351,9 @@ AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                                       mord, seen, grec, refused, treq, tdec, 
                                       ttally, ncnt, badTaint, badResume, revN, 
                                       revT, preN, preT, rvN, rvT, badPre, 
-                                      badOrder, stack, key, bodyVal, tneed, 
-                                      ckey, val, name, it, out, term, rk, rv, 
-                                      rf >>
+                                      badReplay, sawReplayRev, badOrder, stack, 
+                                      key, bodyVal, tneed, ckey, val, name, it, 
+                                      out, term, rk, rv, rf >>
 
 LoopH(self) == /\ pc[self] = "LoopH"
                /\ /\ key' = [key EXCEPT ![self] = <<"H", it[self]>>]
@@ -1328,8 +1372,8 @@ LoopH(self) == /\ pc[self] = "LoopH"
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                treq, tdec, ttally, ncnt, badTaint, badResume, 
                                revN, revT, preN, preT, rvN, rvT, badPre, 
-                               badOrder, ckey, val, name, it, out, term, rk, 
-                               rv, rf >>
+                               badReplay, sawReplayRev, badOrder, ckey, val, 
+                               name, it, out, term, rk, rv, rf >>
 
 AfterH(self) == /\ pc[self] = "AfterH"
                 /\ IF failed[self] # None
@@ -1341,8 +1385,9 @@ AfterH(self) == /\ pc[self] = "AfterH"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 RunS(self) == /\ pc[self] = "RunS"
               /\ /\ key' = [key EXCEPT ![self] = <<"S", it[self]>>]
@@ -1360,8 +1405,9 @@ RunS(self) == /\ pc[self] = "RunS"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              ckey, val, name, it, out, term, rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, ckey, val, name, it, out, 
+                              term, rk, rv, rf >>
 
 AfterS(self) == /\ pc[self] = "AfterS"
                 /\ IF failed[self] # None
@@ -1373,8 +1419,9 @@ AfterS(self) == /\ pc[self] = "AfterS"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 ChooseS(self) == /\ pc[self] = "ChooseS"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = SKey(it[self])]
@@ -1393,8 +1440,8 @@ ChooseS(self) == /\ pc[self] = "ChooseS"
                                  dd, jn, ord, tm, mord, seen, grec, refused, 
                                  treq, tdec, ttally, ncnt, badTaint, badResume, 
                                  revN, revT, preN, preT, rvN, rvT, badPre, 
-                                 badOrder, key, bodyVal, tneed, it, out, term, 
-                                 rk, rv, rf >>
+                                 badReplay, sawReplayRev, badOrder, key, 
+                                 bodyVal, tneed, it, out, term, rk, rv, rf >>
 
 AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                       /\ IF failed[self] # None
@@ -1416,9 +1463,10 @@ AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                                       cur, dd, jn, ord, tm, mord, seen, grec, 
                                       refused, treq, tdec, ttally, ncnt, 
                                       badTaint, badResume, revN, revT, preN, 
-                                      preT, rvN, rvT, badPre, badOrder, stack, 
-                                      key, bodyVal, tneed, ckey, val, name, 
-                                      out, term, rk, rv, rf >>
+                                      preT, rvN, rvT, badPre, badReplay, 
+                                      sawReplayRev, badOrder, stack, key, 
+                                      bodyVal, tneed, ckey, val, name, out, 
+                                      term, rk, rv, rf >>
 
 RunT(self) == /\ pc[self] = "RunT"
               /\ /\ key' = [key EXCEPT ![self] = <<"T", 0>>]
@@ -1436,8 +1484,9 @@ RunT(self) == /\ pc[self] = "RunT"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              ckey, val, name, it, out, term, rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, ckey, val, name, it, out, 
+                              term, rk, rv, rf >>
 
 AfterT(self) == /\ pc[self] = "AfterT"
                 /\ IF failed[self] # None
@@ -1449,8 +1498,9 @@ AfterT(self) == /\ pc[self] = "AfterT"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 SetT(self) == /\ pc[self] = "SetT"
               /\ term' = [term EXCEPT ![self] = "T"]
@@ -1461,9 +1511,9 @@ SetT(self) == /\ pc[self] = "SetT"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              stack, key, bodyVal, tneed, ckey, val, name, it, 
-                              rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, stack, key, bodyVal, 
+                              tneed, ckey, val, name, it, rk, rv, rf >>
 
 RunQ(self) == /\ pc[self] = "RunQ"
               /\ /\ key' = [key EXCEPT ![self] = <<"Q", 0>>]
@@ -1481,8 +1531,9 @@ RunQ(self) == /\ pc[self] = "RunQ"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              ckey, val, name, it, out, term, rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, ckey, val, name, it, out, 
+                              term, rk, rv, rf >>
 
 AfterQ(self) == /\ pc[self] = "AfterQ"
                 /\ IF failed[self] # None
@@ -1494,8 +1545,9 @@ AfterQ(self) == /\ pc[self] = "AfterQ"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 SetQ(self) == /\ pc[self] = "SetQ"
               /\ term' = [term EXCEPT ![self] = "Q"]
@@ -1506,9 +1558,9 @@ SetQ(self) == /\ pc[self] = "SetQ"
                               fired, firedN, badRoute, badFire, rdecl, cur, dd, 
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
-                              revT, preN, preT, rvN, rvT, badPre, badOrder, 
-                              stack, key, bodyVal, tneed, ckey, val, name, it, 
-                              rk, rv, rf >>
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, badOrder, stack, key, bodyVal, 
+                              tneed, ckey, val, name, it, rk, rv, rf >>
 
 Complete(self) == /\ pc[self] = "Complete"
                   /\ IF Bug # "NoCompletion"
@@ -1536,9 +1588,10 @@ Complete(self) == /\ pc[self] = "Complete"
                                   badFire, rdecl, cur, dd, jn, ord, tm, mord, 
                                   seen, grec, refused, treq, tdec, ttally, 
                                   ncnt, badTaint, badResume, revN, revT, preN, 
-                                  preT, rvN, rvT, badPre, badOrder, stack, key, 
-                                  bodyVal, tneed, ckey, val, name, it, out, 
-                                  term, rk, rv, rf >>
+                                  preT, rvN, rvT, badPre, badReplay, 
+                                  sawReplayRev, badOrder, stack, key, bodyVal, 
+                                  tneed, ckey, val, name, it, out, term, rk, 
+                                  rv, rf >>
 
 Finish(self) == /\ pc[self] = "Finish"
                 /\ IF failed[self] \notin {None, "runaway", "denied"}
@@ -1550,8 +1603,9 @@ Finish(self) == /\ pc[self] = "Finish"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badOrder, stack, key, bodyVal, tneed, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                bodyVal, tneed, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 driver(self) == Begin(self) \/ BeginStart(self) \/ RunE(self)
                    \/ AfterE(self) \/ ChooseE(self) \/ AfterChooseE(self)
@@ -1578,8 +1632,8 @@ RPick(self) == /\ pc[self] = "RPick"
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                treq, tdec, ttally, ncnt, badTaint, badResume, 
                                revN, revT, preN, preT, rvN, rvT, badPre, 
-                               badOrder, stack, key, bodyVal, tneed, ckey, val, 
-                               name, it, out, term >>
+                               badReplay, sawReplayRev, badOrder, stack, key, 
+                               bodyVal, tneed, ckey, val, name, it, out, term >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -1602,9 +1656,9 @@ RWrite(self) == /\ pc[self] = "RWrite"
                                 badRoute, badFire, rdecl, cur, dd, tm, mord, 
                                 seen, grec, refused, treq, tdec, ttally, ncnt, 
                                 badTaint, badResume, revN, revT, preN, preT, 
-                                rvN, rvT, badPre, badOrder, stack, key, 
-                                bodyVal, tneed, ckey, val, name, it, out, term, 
-                                rk, rv, rf >>
+                                rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                badOrder, stack, key, bodyVal, tneed, ckey, 
+                                val, name, it, out, term, rk, rv, rf >>
 
 resolver(self) == RPick(self) \/ RWrite(self)
 
@@ -1627,9 +1681,10 @@ ADecide(self) == /\ pc[self] = "ADecide"
                                  firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                                  ord, tm, mord, seen, grec, refused, treq, 
                                  ttally, ncnt, badTaint, badResume, revN, revT, 
-                                 preN, preT, rvN, rvT, badPre, badOrder, stack, 
-                                 key, bodyVal, tneed, ckey, val, name, it, out, 
-                                 term, rk, rv, rf >>
+                                 preN, preT, rvN, rvT, badPre, badReplay, 
+                                 sawReplayRev, badOrder, stack, key, bodyVal, 
+                                 tneed, ckey, val, name, it, out, term, rk, rv, 
+                                 rf >>
 
 approver(self) == ADecide(self)
 
@@ -1678,7 +1733,7 @@ Crash(d) ==
   /\ name' = [name EXCEPT ![d] = defaultInitValue]
   /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf,
                  rdecl, jn, ord, tm, mord, grec, refused, treq, tdec, ttally, ncnt, badTaint, badResume,
-                 revN, revT, preN, preT, rvN, rvT, badPre, badOrder>>
+                 revN, revT, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev>>
 
 \* A certificate of an approval is revoked (once), whenever (only in a model that tracks taint).
 Revoke ==
@@ -1687,7 +1742,7 @@ Revoke ==
        IF w = "N" THEN ~revN /\ revN' = TRUE /\ revT' = revT ELSE ~revT /\ revT' = TRUE /\ revN' = revN
   /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, nval, choice, failed, reply, ambig, crashes,
                  fired, firedN, badRoute, badFire, rdecl, cur, dd, jn, ord, tm, mord, seen, grec, refused,
-                 treq, tdec, ttally, ncnt, badTaint, badResume, preN, preT, rvN, rvT, badPre, badOrder, pc, stack,
+                 treq, tdec, ttally, ncnt, badTaint, badResume, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev, pc, stack,
                  key, bodyVal, tneed, ckey, val, name, it, out, term, rk, rv, rf>>
 
 FullNext == Next \/ \E d \in Drivers : Crash(d) \/ Revoke
@@ -1772,6 +1827,9 @@ RefusedClean == \A k \in NodeKeys : refused[k] =>
 \* PreExec: an approved attempt is claimed only after a PreExec that saw no revocation.
 PreExecHeld == ~badPre
 
+\* Replays are not blocked: no PreExec refuses a node whose result is recorded.
+ReplayNeverBlocked == ~badReplay
+
 \* The gate-reason record (and so a refusal) is journaled before any attempt of a tainted node.
 GateReasonFirst == ~badOrder
 
@@ -1784,6 +1842,7 @@ EffectNotReachable == ~(done.rec /\ \E k \in NodeKeys : fired[k] > 0)
 RevokedStopNotReachable == ~((revN \/ revT) /\ \E d \in Drivers : failed[d] = "error")
 IdempotentPassNotReachable == ~(\E k \in TKeys : k[1] \in Idempotent /\ ttally[k] = "pass" /\ res[k].rec)
 RevokedInstanceStopNotReachable == ~(revT /\ \E d \in Drivers : failed[d] = "error" /\ preN[d])
+ReplayAfterRevokeNotReachable == ~sawReplayRev
 TaintPassNotReachable == ~(\E k \in TKeys : ttally[k] = "pass" /\ mk[k] # None)
 TaintPassLoopNotReachable == ~(\E k \in TKeys : k[2] = 1 /\ ttally[k] = "pass" /\ mk[k] # None)
 TaintDenyNotReachable == ~(\E k \in TKeys : ttally[k] = "deny")
