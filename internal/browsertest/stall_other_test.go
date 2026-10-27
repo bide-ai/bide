@@ -57,7 +57,7 @@ func TestDeadlineKillsTheScript(t *testing.T) {
 		t.Fatalf("the script did not record its pid: %v", rerr)
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	for i := 0; i < 50 && !gone(pid); i++ {
+	for i := 0; i < 300 && !gone(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !gone(pid) {

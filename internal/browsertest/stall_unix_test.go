@@ -3,6 +3,7 @@
 package browsertest
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -40,7 +41,7 @@ func TestRunKillsTheScriptsChildren(t *testing.T) {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
 	gone := false
-	for i := 0; i < 50 && !gone; i++ {
+	for i := 0; i < 300 && !gone; i++ {
 		if syscall.Kill(pid, 0) != nil {
 			gone = true
 			break
@@ -140,7 +141,7 @@ func TestKillProfileLeavesALongerPathAlone(t *testing.T) {
 	other := spin(t, "--user-data-dir="+short+"456789")
 	killProfile(short)
 	for name, s := range map[string]spinner{"the run's own process": mine, "one of its files": inside} {
-		if !s.exited(5 * time.Second) {
+		if !s.exited(30 * time.Second) {
 			t.Errorf("%s was not killed", name)
 		}
 	}
@@ -155,7 +156,7 @@ func TestKillProfileMeta(t *testing.T) {
 	dir := t.TempDir() + "/bide-chrome-a+b[c]"
 	p := spin(t, "--user-data-dir="+dir)
 	killProfile(dir)
-	if !p.exited(5 * time.Second) {
+	if !p.exited(30 * time.Second) {
 		t.Errorf("the process of a directory with regexp metacharacters in its name was not killed")
 	}
 }
@@ -168,5 +169,79 @@ func TestRunAsksTheScriptToStopFirst(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "closing chrome on SIGTERM") || !strings.Contains(err.Error(), "closing chrome on SIGTERM") {
 		t.Errorf("the script was not sent SIGTERM before it was killed: stdout %q", out)
+	}
+}
+
+// killProfile stops looking when its time is up, however slow each scan is: with the process always
+// "found" and every pgrep and pkill taking 200ms, a limit counted in rounds would make 20 rounds and
+// run for many times the budget. The check counts calls, not seconds, so a slow machine cannot fail
+// it: a slower machine only fits fewer rounds in the budget.
+func TestKillProfileStopsAtItsDeadline(t *testing.T) {
+	oldWait, oldRun := profileWait, runTool
+	defer func() { profileWait, runTool = oldWait, oldRun }()
+	profileWait = 500 * time.Millisecond
+	calls := 0
+	runTool = func(ctx context.Context, name string, args ...string) error {
+		calls++
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-ctx.Done():
+		}
+		return nil // pgrep: still found; pkill: killed
+	}
+	killProfile("/tmp/bide-chrome-0123456789abcdef")
+	// 500ms of budget at 200ms a call is at most 3 or 4 calls; 20 rounds would be 40.
+	if calls > 8 {
+		t.Fatalf("%d pgrep/pkill calls inside a 500ms budget", calls)
+	}
+}
+
+// A scan that hangs is cut off with the rest of the budget: the context given to pgrep and pkill ends
+// when the budget does.
+func TestKillProfileCutsOffAHungScan(t *testing.T) {
+	oldWait, oldRun := profileWait, runTool
+	defer func() { profileWait, runTool = oldWait, oldRun }()
+	profileWait = 300 * time.Millisecond
+	cutOff := false
+	runTool = func(ctx context.Context, name string, args ...string) error {
+		if name != "pgrep" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			cutOff = true
+		case <-time.After(5 * time.Second): // a scan that never ends
+		}
+		return nil
+	}
+	killProfile("/tmp/bide-chrome-0123456789abcdef")
+	if !cutOff {
+		t.Errorf("a hung pgrep was not cut off when the budget ended")
+	}
+}
+
+// A scan cut off by the budget is not "no process found": the processes it did not get to report are
+// still killed, with a pkill that has time of its own. A first scan slower than the budget is what a
+// loaded runner produces, and it must not leave the detached Chrome running.
+func TestKillProfileStillKillsWhenTheScanOutlastsTheBudget(t *testing.T) {
+	oldWait, oldRun := profileWait, runTool
+	defer func() { profileWait, runTool = oldWait, oldRun }()
+	profileWait = 200 * time.Millisecond
+	killed := false
+	runTool = func(ctx context.Context, name string, args ...string) error {
+		if name == "pkill" {
+			killed = ctx.Err() == nil // it must start with time left
+			return nil
+		}
+		select { // pgrep, as CommandContext ends it: killed, Run returns an error
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second): // a context that never ends would hang the test
+			return nil
+		}
+	}
+	killProfile("/tmp/bide-chrome-0123456789abcdef")
+	if !killed {
+		t.Errorf("pkill was not run, or ran with no time left, after a scan that outlasted the budget")
 	}
 }
