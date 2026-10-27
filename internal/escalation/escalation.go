@@ -83,9 +83,6 @@ func ID(call string) string {
 // taint, and "node:x:step:taint" a Step named taint.
 func Base(subject string) (string, bool) {
 	if strings.HasPrefix(subject, planPrefix) {
-		if _, _, isKey := PlanKey(subject); isKey {
-			return "", false
-		}
 		if node, ok := strings.CutSuffix(subject, NodeSuffix); ok && IsNodeKey(node) {
 			return node, true
 		}

@@ -353,6 +353,18 @@ func TestBuild_EscalationInstanceOfAFlowNodeIsAGateOfItsOwn(t *testing.T) {
 	if escG.ToolName != "refund" || escG.Need != 1 || !slices.Equal(escG.Approvers, []string{"risk"}) || !escG.Waiting {
 		t.Errorf("the instance's gate = %+v, want refund, 1 of [risk], waiting", escG)
 	}
+	// The instance's result is its node's: once the node has a record, the instance no longer waits, though
+	// it has no decision of its own.
+	recs, err := j.History(ctx, "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := append(recs[:len(recs):len(recs)], agent.Record{Name: "node:refund", Kind: agent.StepValue, Result: json.RawMessage(`"refunded"`)})
+	for _, g := range Build(ctx, "f1", ran, nil).Gates {
+		if g.ToolUseID == inst && g.Waiting {
+			t.Errorf("the instance still waits after its node's record: %+v", g)
+		}
+	}
 	// Decide both, run the flow: neither gate waits, and the instance's result is the node's.
 	for _, d := range []struct {
 		p        *agent.ApprovalPending
