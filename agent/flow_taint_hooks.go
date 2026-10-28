@@ -279,7 +279,8 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	}
 	if !found {
 		rec := gateReasonRecord{Format: gateReasonFormat, ToolUseID: nodeKey, Reasons: req.Reasons, PolicyDigest: gateDigest(decls.Policy.Gate),
-			Gate: decls.Policy.Gate.Clone(), Exempt: req.Exempt, Refused: req.Required && req.Refuse, RecordedAt: noteStamp(clockFrom(ctx))}
+			Gate: decls.Policy.Gate.Clone(), Exempt: req.Exempt, Refused: req.Required && req.Refuse, RecordedAt: noteStamp(clockFrom(ctx)),
+			SeparateApprovers: decls.Policy.SeparateApprovers && ownGate}
 		winner, _, err := putGateReason(ctx, jr, runID, rec)
 		if err != nil {
 			return journalhook.FlowTaintDecision{}, err

@@ -240,6 +240,20 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 					}
 				}
 			}
+			// The escalation instance of a policy that separates approvers is not asked of the approvers the call's
+			// own gate counted: their decisions would be ignored.
+			if own := separatedFromOwn(recs, w.ToolUseID); own != "" {
+				if sib, ok := siblingCounted(recs, own); ok {
+					for _, a := range w.Approvers {
+						if slices.ContainsFunc(sib, func(c string) bool { return SameApprover(a, c) }) {
+							ap.siblingExcluded = append(ap.siblingExcluded, a)
+							if !slices.Contains(ap.Excluded, a) {
+								ap.Excluded = append(ap.Excluded, a)
+							}
+						}
+					}
+				}
+			}
 		}
 		out = append(out, notifyEvent{key: key, kind: NotificationApprovalPending, runID: root, opRun: runID, approval: ap})
 	}

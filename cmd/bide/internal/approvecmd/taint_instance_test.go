@@ -174,3 +174,58 @@ func TestApprove_ShowsACapReason(t *testing.T) {
 		}
 	}
 }
+
+// The escalation instance of a call whose taint policy separates approvers is not decided by the approvers the call's
+// own gate counted: bide approve refuses their decision with the reason, -list says they cannot approve and does not
+// count them pending, and the others are as before.
+func TestApprove_AnInstanceLeavesOutTheApproversTheOwnGateCounted(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "own1"}})
+	f.Esc = &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "esc2"}} // one is enough, so one left can still decide
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "esc1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	j := taintfixture.Separated(t, f.Journal, taintfixture.Run, "c2")
+
+	esc, err := load(ctx, j, taintfixture.Run, "c2#taint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = esc.preflight(taintfixture.Run, "esc1", false, f.Verifiers)
+	if err == nil || !strings.Contains(err.Error(), "already decided on the call's own gate") {
+		t.Errorf("preflight(esc1) on the separated instance = %v, want the refusal naming the own gate", err)
+	}
+	if err := esc.preflight(taintfixture.Run, "esc2", false, f.Verifiers); err != nil {
+		t.Errorf("preflight(esc2) on the separated instance: %v", err)
+	}
+	// Without the separation esc1 may decide the instance.
+	plain, err := load(ctx, f.Journal, taintfixture.Run, "c2#taint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.preflight(taintfixture.Run, "esc1", false, f.Verifiers); err != nil {
+		t.Errorf("preflight(esc1) on an unseparated instance: %v", err)
+	}
+
+	stub := Stores{Postgres: func(string, bool) (agent.Store, io.Closer, error) { return j.Store(), io.NopCloser(nil), nil }}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-json"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	var got []waiting
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if len(got) != 1 || got[0].Call != "c2#taint" || !slices.Equal(got[0].ExcludedBySibling, []string{"esc1"}) {
+		t.Fatalf("list = %+v, want the instance with esc1 excluded by the sibling", got)
+	}
+	out.Reset()
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "separated approvers (taint policy): cannot approve: esc1") {
+		t.Errorf("the text list does not name the excluded approver:\n%s", out.String())
+	}
+}

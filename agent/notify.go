@@ -64,8 +64,9 @@ type NotifyApproval struct {
 	Approvers []string // the gate's eligible approvers; nil for a 1-of-1 gate
 	Approved  int      // approvals counted when the event was observed
 	// Excluded are the approvers who may not decide on this call: under separation of duties
-	// (ApprovalPolicy.ExcludePrincipal), those who are requesters of the run. Their decisions never
-	// count, so a notifier need not ask them.
+	// (ApprovalPolicy.ExcludePrincipal), those who are requesters of the run; on the escalation instance of a
+	// taint policy that separates approvers (TaintPolicy.SeparateApprovers), those the call's own gate counted.
+	// Their decisions never count, so a notifier need not ask them.
 	Excluded []string
 	// Reask says why the gate asks again over a recorded tally it does not act on
 	// (PendingReapproval, PendingSoDReapproval, PendingIdentReapproval, PendingExecHoldReapproval), or "" for the gate's first ask. A re-ask is an event
@@ -76,6 +77,9 @@ type NotifyApproval struct {
 	// holds, the rule and this call's figures as of the ask. It is the engine's gate-reason record, the
 	// application's claim and evidence for the approver, never read by a gate. Empty for a plain gate. Experimental.
 	Why []GateReason
+	// siblingExcluded are the approvers the call's own gate counted, on the escalation instance of a taint policy
+	// that separates approvers: among Excluded, and left out of the routing, so no receiver is notified for them.
+	siblingExcluded []string
 	// reaskGen is the generation of the count a certificate-bound gate asks for (ApprovalIdentReaskStep),
 	// with Reask PendingIdentReapproval (0) or PendingExecHoldReapproval (n >= 1).
 	reaskGen int

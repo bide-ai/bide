@@ -689,6 +689,9 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 	if !slices.Contains(gt.Approvers, as) {
 		return refuse("%q is not an approver of the gate on call %s; its approvers are: %s", safe(as), safe(gt.ToolUseID), safe(strings.Join(gt.Approvers, ", ")))
 	}
+	if slices.Contains(gt.ExcludedBySibling, as) {
+		return refuse("%s already decided on the call's own gate, and the taint policy separates approvers (the second look must be by someone else): your decision on the escalation gate of call %s would not count", safe(as), safe(gt.ToolUseID))
+	}
 	if requester(gt, as) {
 		return refuse("%s is a requester of run %s (the gate excludes the requester: separation of duties); your decision would not count", safe(as), safe(run))
 	}
@@ -1175,7 +1178,10 @@ type waiting struct {
 	// the approvers who fill no seat for it. No command is offered for them.
 	Requesters []string `json:"requesters,omitempty"`
 	Excluded   []string `json:"excluded,omitempty"`
-	AskedAt    string   `json:"asked_at,omitempty"`
+	// ExcludedBySibling: the taint policy separates approvers, so the approvers the call's own gate counted do not
+	// count on this escalation gate (no command is offered for them either).
+	ExcludedBySibling []string `json:"excluded_by_sibling,omitempty"`
+	AskedAt           string   `json:"asked_at,omitempty"`
 	// Why says why the call needs this gate beyond its tool's own (the gate-reason record, the
 	// application's claim, as of the ask); nothing in the decision binds it.
 	Why []gatereason.Reason `json:"why,omitempty"`
@@ -1249,6 +1255,7 @@ func (c *cmd) list(ctx context.Context) error {
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,
 				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity, Held: g.Held, Why: g.Why}
 			bound := g.Identity != nil && g.Identity.Bound
+			w.ExcludedBySibling = g.ExcludedBySibling
 			if g.ExcludePrincipal {
 				w.Requesters, w.Excluded = g.Requesters, g.Excluded
 			}
@@ -1338,6 +1345,9 @@ func (c *cmd) list(ctx context.Context) error {
 			fmt.Fprintf(c.out, "    %d of %d: %s%s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy), label)
 			if len(w.Requesters) > 0 {
 				fmt.Fprintf(c.out, "    excluding the requester (separation of duties): requested by %s%s\n", safe(strings.Join(w.Requesters, ", ")), names("; cannot approve:", w.Excluded))
+			}
+			if len(w.ExcludedBySibling) > 0 {
+				fmt.Fprintf(c.out, "    separated approvers (taint policy): cannot approve%s (already decided on the call's own gate)\n", names(":", w.ExcludedBySibling))
 			}
 			switch w.Settled {
 			case "approved":

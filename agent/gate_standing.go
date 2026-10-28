@@ -79,6 +79,13 @@ func EvaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 // counts only the decisions recorded after the gate's request, the step ApprovalRequestStep(key)
 // names, and whose result is the key's own record. With since "" it is EvaluateGate.
 func EvaluateGateAfter(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, since string) GateStanding {
+	if pol != nil && pol.sibling == "" && !pol.single() {
+		// An escalation instance whose call's gate-reason record says the policy separates approvers stands
+		// apart from the call's own gate: who may still decide is who the own gate did not count.
+		if own := separatedFromOwn(recs, s.ToolUseID); own != "" {
+			pol = pol.separatedFrom(own)
+		}
+	}
 	st := evaluateGate(recs, s, pol, verifierFor, since)
 	if _, at, ok := RecordedDeadline(recs, s.ToolUseID); ok {
 		st.Deadline = at

@@ -270,6 +270,10 @@ func (e *notifyEngine) routed(ev notifyEvent) []notifyEvent {
 	var approvers []string
 	if ev.approval != nil {
 		approvers = ev.approval.Approvers
+		if len(ev.approval.siblingExcluded) > 0 {
+			// The approvers the call's own gate counted are not asked on its escalation instance.
+			approvers = slices.DeleteFunc(slices.Clone(approvers), func(a string) bool { return slices.Contains(ev.approval.siblingExcluded, a) })
+		}
 	}
 	recvs := e.cfg.routing().Receivers(ev.kind, approvers)
 	if len(recvs) == 1 {

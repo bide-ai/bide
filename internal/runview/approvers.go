@@ -141,6 +141,8 @@ func cards(g Gate, p *Proof) []ApproverCard {
 			c.State = "excluded"
 			if slices.ContainsFunc(g.Requesters, func(r string) bool { return agent.SameApprover(n, r) }) {
 				c.Why = "excluded: the run's requester, who may not approve their own request (separation of duties)"
+			} else if slices.Contains(g.ExcludedBySibling, n) {
+				c.Why = "excluded: already decided on the call's own gate, and the taint policy separates approvers"
 			} else {
 				c.Why = "excluded: fills no seat in this gate"
 			}

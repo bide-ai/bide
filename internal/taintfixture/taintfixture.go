@@ -193,3 +193,41 @@ func (f *F) WithCapReason() *agent.Journal {
 	}
 	return j
 }
+
+// Separated returns a copy of j in which the gate-reason record of call (written by the engine) also says that the
+// taint policy separates approvers (SeparateApprovers), so the readers of a journal can be tested on an escalation
+// instance that leaves out the approvers its call's own gate counted. The engine refuses a policy whose Gate shares
+// an approver with a tool's own gate, so such a run cannot be made by driving it: the record is edited, as
+// WithCapReason does for a cap reason.
+func Separated(t *testing.T, j *agent.Journal, run, call string) *agent.Journal {
+	t.Helper()
+	ctx := context.Background()
+	ms := agent.NewMemStore()
+	found := false
+	for e, err := range j.Store().Load(ctx, run, -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := e.Data
+		if e.Name == "gate-reason:"+call {
+			found = true
+			var rec map[string]any
+			if err := json.Unmarshal(data, &rec); err != nil {
+				t.Fatal(err)
+			}
+			rec["result"].(map[string]any)["separate_approvers"] = true
+			data, _ = json.Marshal(rec)
+		}
+		if _, _, err := ms.Insert(ctx, run, e.Name, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !found {
+		t.Fatalf("no gate-reason record for %s in run %s", call, run)
+	}
+	nj, err := agent.NewJournal(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nj
+}

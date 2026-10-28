@@ -588,6 +588,12 @@ const (
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
 // policy this rule would count short); a nil verifierFor counts nothing.
 func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
+	if p.sibling == "" && !p.one {
+		// A call's escalation instance whose gate-reason record says the policy separates approvers is counted
+		// apart from the call's own gate, so a reader of the journal sees who may still decide. (The engine counts
+		// from its policy, and audit.VerifyApprovals from the policy it is given.)
+		p.sibling = separatedFromOwn(recs, s.ToolUseID)
+	}
 	return tallyApprovals(recs, recs, s, p, verifierFor)
 }
 

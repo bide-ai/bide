@@ -313,3 +313,110 @@ func ownRecords(t *testing.T, j *Journal) []string {
 	}
 	return out
 }
+
+// A reader of the journal (EvaluateGate, TallyApprovals: the approvals intake, the viewer, bide approve) counts an
+// escalation instance apart from the call's own gate when the call's gate-reason record says the policy separates
+// approvers, so who may still decide is who the own gate did not count. A record that does not say so changes nothing.
+func TestReaders_CountAnInstanceApartWhenTheGateReasonSaysSo(t *testing.T) {
+	inst := ApprovalSubject{RunID: "r1", ToolUseID: "c1#taint", ToolName: "pay"}
+	pol := sepGate(1, "ops", "sec1")
+	vf := fakeVerifiers("ops", "sec1")
+	reason := func(separate bool) Record {
+		b, _ := json.Marshal(gateReasonRecord{Format: gateReasonFormat, ToolUseID: "c1", SeparateApprovers: separate})
+		return Record{Name: gateReasonStep("c1"), Kind: StepValue, Result: b}
+	}
+	for _, c := range []struct {
+		name     string
+		recs     []Record
+		excluded string
+	}{
+		{"flagged", []Record{reason(true), ownTally("c1", []string{"ops"}, nil), instanceDecision(inst, "ops", true)}, "ops"},
+		{"not flagged", []Record{reason(false), ownTally("c1", []string{"ops"}, nil), instanceDecision(inst, "ops", true)}, ""},
+		{"no record", []Record{ownTally("c1", []string{"ops"}, nil), instanceDecision(inst, "ops", true)}, ""},
+	} {
+		tally, _ := TallyApprovals(c.recs, inst, *pol, vf)
+		if got := strings.Join(tally.ExcludedBySibling, ","); got != c.excluded {
+			t.Errorf("%s: TallyApprovals excludes %q, want %q", c.name, got, c.excluded)
+		}
+		st := EvaluateGateAfter(c.recs, inst, pol, vf, "")
+		if got := strings.Join(st.Tally.ExcludedBySibling, ","); got != c.excluded {
+			t.Errorf("%s: EvaluateGate excludes %q, want %q", c.name, got, c.excluded)
+		}
+	}
+	// The call's own gate is not separated from itself, whatever its record says.
+	own := ApprovalSubject{RunID: "r1", ToolUseID: "c1", ToolName: "pay"}
+	recs := []Record{reason(true), instanceDecision(own, "ops", true)}
+	if tally, _ := TallyApprovals(recs, own, *pol, vf); len(tally.ExcludedBySibling) != 0 {
+		t.Errorf("the call's own gate excludes %v", tally.ExcludedBySibling)
+	}
+}
+
+// The engine writes the flag in the gate-reason record only for a call or node that has an own gate and a policy
+// that separates approvers.
+func TestGateReason_SaysWhenTheInstanceIsSeparated(t *testing.T) {
+	ctx := withUnderTaint(context.Background(), parentDigest)
+	for _, c := range []struct {
+		name string
+		sep  bool
+		own  *ApprovalPolicy
+		want bool
+	}{
+		{"separate, an own gate", true, sepGate(2, "ops", "fin"), true},
+		{"separate, no own gate", true, nil, false},
+		{"no separation, an own gate", false, sepGate(2, "ops", "fin"), false},
+	} {
+		a := &Agent{store: memJournal(), taint: &TaintPolicy{Gate: sepGate(2, "sec1", "sec2"), SeparateApprovers: c.sep}}
+		if _, err := a.escalate(ctx, "r1", ToolUse{ID: "c1", Name: "pay"}, &ToolSpec{Name: "pay", Approval: c.own}, []taintMark{{Source: "inbox", Ref: "turn"}}); err != nil {
+			t.Fatal(err)
+		}
+		rec, ok, err := getGateReason(context.Background(), a.store, "r1", "c1")
+		if err != nil || !ok || rec.SeparateApprovers != c.want {
+			t.Errorf("%s: record %+v, %v, %v; want separate_approvers %v", c.name, rec, ok, err, c.want)
+		}
+	}
+	// A flow node's record: the node hook says whether the node has an own gate.
+	for _, c := range []struct {
+		own, want bool
+	}{{true, true}, {false, false}} {
+		j, _ := beginNested(t, taintedCtx(taintMark{Source: "s", Ref: "node:x"}), hookDecls(func(d *journalhook.FlowTaint) { d.SeparateApprovers = true }), nil)
+		if _, err := flowTaintNode(context.Background(), j, "r1", "node:pay", Safety{}, journalhook.FlowTaintUnder, c.own); err != nil {
+			t.Fatal(err)
+		}
+		if rec, ok, _ := getGateReason(context.Background(), j, "r1", "node:pay"); !ok || rec.SeparateApprovers != c.want {
+			t.Errorf("a node with an own gate %v: record %+v; want separate_approvers %v", c.own, rec, c.want)
+		}
+	}
+}
+
+// The notifier does not ask the approvers the call's own gate counted on the escalation instance of a policy that
+// separates approvers: they are listed as excluded, and no receiver is routed for them.
+func TestNotifier_LeavesOutTheApproversTheOwnGateCounted(t *testing.T) {
+	inst := "c1#taint"
+	wait := ApprovalWait{ToolUseID: inst, ToolName: "pay", Need: 1, Approvers: []string{"alice", "bob", "carol"}}
+	wb, _ := json.Marshal(wait)
+	b, _ := json.Marshal(gateReasonRecord{Format: gateReasonFormat, ToolUseID: "c1", SeparateApprovers: true})
+	recs := []Record{
+		{Name: gateReasonStep("c1"), Kind: StepValue, Result: b},
+		ownTally("c1", []string{"alice"}, nil),
+		{Name: ApprovalPendingStep(inst), Kind: StepValue, Result: wb},
+	}
+	e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+		WithNotifyReceiver("risk", &fakeSink{}), WithNotifyReceiver("finance", &fakeSink{}),
+		WithNotifyApproverRoute("alice", "risk"), WithNotifyApproverRoute("bob", "finance"), WithNotifyApproverRoute("carol", "finance"))
+	evs := e.pendingEvents("r1", recs)
+	if len(evs) != 1 || strings.Join(evs[0].approval.Excluded, ",") != "alice" {
+		t.Fatalf("events %+v; want one with alice excluded", evs)
+	}
+	routed := e.routed(evs[0])
+	if len(routed) != 1 || routed[0].receiver != "finance" {
+		t.Errorf("routed to %d receivers (%v); want only finance: alice's receiver is not asked", len(routed), routed)
+	}
+	// Not flagged: alice's receiver is asked as before.
+	recs[0] = Record{Name: gateReasonStep("c1"), Kind: StepValue, Result: jsonOf(gateReasonRecord{Format: gateReasonFormat, ToolUseID: "c1"})}
+	evs = e.pendingEvents("r1", recs)
+	if len(evs) != 1 || len(evs[0].approval.Excluded) != 0 || len(e.routed(evs[0])) != 2 {
+		t.Errorf("an unflagged instance: %+v", evs)
+	}
+}
+
+func jsonOf(v any) []byte { b, _ := json.Marshal(v); return b }

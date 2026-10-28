@@ -198,7 +198,8 @@ func (a *Agent) escalate(ctx context.Context, runID string, tu ToolUse, spec *To
 	}
 	exempt := spec.TaintExempt != "" // from the registered spec, never from a record
 	if !have {
-		rec = gateReasonRecord{Format: gateReasonFormat, ToolUseID: tu.ID, Reasons: reasons, PolicyDigest: gateDigest(a.taint.Gate), Gate: a.taint.Gate.Clone(), RecordedAt: noteStamp(clockFrom(ctx))}
+		rec = gateReasonRecord{Format: gateReasonFormat, ToolUseID: tu.ID, Reasons: reasons, PolicyDigest: gateDigest(a.taint.Gate), Gate: a.taint.Gate.Clone(), RecordedAt: noteStamp(clockFrom(ctx)),
+			SeparateApprovers: a.taint.SeparateApprovers && effectiveGates(spec, gateInputs{}).Own() != nil}
 		if exempt {
 			rec.Exempt = spec.TaintExempt
 		}
