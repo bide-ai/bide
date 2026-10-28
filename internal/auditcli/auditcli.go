@@ -1355,6 +1355,7 @@ func (c *cli) verifyApprovals(args []string) {
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	excludePrincipal := fs.Bool("exclude-principal", false, "the policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); the evidence must prove the run's run:principal")
+	separateFrom := fs.String("separate-from", "", `for an escalation instance ("<call>#taint", "node:<name>:taint") under a taint policy that separates approvers: the subject of the call's or node's own gate, whose counted approvers do not count here; the evidence must prove that gate's tally`)
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}`)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
@@ -1371,6 +1372,9 @@ func (c *cli) verifyApprovals(args []string) {
 	policy := agent.ApprovalPolicy{Need: *need, Approvers: strings.Split(*approvers, ","), ExcludePrincipal: *excludePrincipal}
 	if err := policy.Validate(); err != nil {
 		c.usageError(fmt.Sprintf("verify-approvals: -need and -approvers: %v", err))
+	}
+	if *separateFrom != "" {
+		policy = policy.SeparatedFrom(*separateFrom)
 	}
 	var pkg audit.EvidencePackage
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))

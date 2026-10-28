@@ -16,7 +16,7 @@ import (
 func (a *Agent) declarationsDoc() declarations.Document {
 	d := declarations.Document{Format: declarations.Format, TracksIdempotent: true, Digest: a.taintDigest(), Tools: []declarations.Tool{}}
 	if a.taint != nil {
-		d.Policy = &declarations.Policy{Gate: gateDoc(a.taint.Gate), Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
+		d.Policy = &declarations.Policy{Gate: gateDoc(a.taint.Gate), Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance, SeparateApprovers: a.taint.SeparateApprovers}
 	}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]

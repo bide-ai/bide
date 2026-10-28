@@ -453,6 +453,11 @@ type ApprovalTally struct {
 	// empty when it records none.
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 	Requesters       []string `json:"requesters,omitempty"`
+	// ExcludedBySibling names the eligible approvers, in policy order, who fill no seat because the call's own gate
+	// counted their decision and the taint policy separates approvers (TaintPolicy.SeparateApprovers): on a
+	// call's escalation instance only. They are also in Excluded, so Unreachable leaves them out, and a count with
+	// too few approvers left is a denial, not a wait. An offline recount excludes the same approvers.
+	ExcludedBySibling []string `json:"excluded_by_sibling,omitempty"`
 	// Records names every decision record on this call the gate read, valid or not, in
 	// journal order. Evidence must disclose all of them, so an omitted decision is detectable.
 	Records []string `json:"records,omitempty"`
@@ -516,6 +521,8 @@ const (
 	ReasonDecidedAt   = "the signed decision time is not in canonical form (2006-01-02T15:04:05.000Z)"
 	ReasonRequester   = "the approver is a requester of the run (its principal, or that of a run above it), whom the policy excludes (separation of duties)"
 	ReasonNoRequester = "the policy excludes the requester, and the run, or a run above it, records no requester principal in printable ASCII"
+	ReasonSibling     = "the approver's decision was counted on the call's own gate, and the taint policy separates approvers (excluded_by_sibling)"
+	ReasonNoSibling   = "the taint policy separates approvers, and the call's own gate has no recorded outcome to separate from"
 	ReasonLate        = "recorded after the gate's deadline (approval-deadline), or with no recorded time on a gate that has one"
 	// ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it
 	// was stamped before the deadline. The expiry, recorded first, is the outcome.
@@ -595,6 +602,22 @@ func tallyApprovals(recs, journal []Record, s ApprovalSubject, p ApprovalPolicy,
 		eligible[id] = true
 	}
 	vs, bad, _ := approverSeats(p, verifierFor)
+	if p.sibling != "" {
+		sib, ok := siblingCounted(journal, p.sibling)
+		for _, id := range p.Approvers {
+			if _, done := bad[id]; done {
+				continue
+			}
+			switch {
+			case !ok:
+				bad[id] = ReasonNoSibling
+				t.ExcludedBySibling = append(t.ExcludedBySibling, id)
+			case slices.ContainsFunc(sib, func(s string) bool { return SameApprover(id, s) }):
+				bad[id] = ReasonSibling
+				t.ExcludedBySibling = append(t.ExcludedBySibling, id)
+			}
+		}
+	}
 	if p.ExcludePrincipal {
 		t.ExcludePrincipal = true
 		rp, ok := RecordedPrincipal(recs)
@@ -699,6 +722,20 @@ func tallyApprovals(recs, journal []Record, s ApprovalSubject, p ApprovalPolicy,
 }
 
 // protocol:identity end
+
+// siblingCounted is the approvers whose decisions the terminal tally of the gate on subject own counted, from the
+// journal, and false when the journal holds no outcome for it (or one that does not read).
+func siblingCounted(journal []Record, own string) ([]string, bool) {
+	rt, ok := RecordedTally(GateTallyValues(journal, own), own)
+	if !ok {
+		return nil, false
+	}
+	var t ApprovalTally
+	if json.Unmarshal(rt.Result, &t) != nil {
+		return nil, false
+	}
+	return append(slices.Clone(t.ApprovedBy), t.DeniedBy...), true
+}
 
 // decisionReason returns why r, a decision record whose approver's verifier is v, does not verify
 // for s, or "" when it does: it is signed under v's scheme, carries a decision time in canonical

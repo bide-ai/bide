@@ -13,7 +13,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 **Constants**
 
 - `const MaxDecisionCertChain = 8`, `const MaxDecisionCertDER = 16 << 10`: MaxDecisionCertChain and MaxDecisionCertDER bound the certificate chain a decision carries: at most this many certificates, each at most this many bytes of DER.
-- `const ReasonNotEligible = "not an eligible approver"`, `const ReasonSuperseded`, `const ReasonNoKey = "no key for this approver"`, `const ReasonBadSig`, `const ReasonSharedKey`, `const ReasonNoKeyID`, `const ReasonAlg`, `const ReasonNoDecidedAt`, `const ReasonDecidedAt`, `const ReasonRequester`, `const ReasonNoRequester`, `const ReasonLate`: Reasons a decision record does not count.
+- `const ReasonNotEligible = "not an eligible approver"`, `const ReasonSuperseded`, `const ReasonNoKey = "no key for this approver"`, `const ReasonBadSig`, `const ReasonSharedKey`, `const ReasonNoKeyID`, `const ReasonAlg`, `const ReasonNoDecidedAt`, `const ReasonDecidedAt`, `const ReasonRequester`, `const ReasonNoRequester`, `const ReasonSibling`, `const ReasonNoSibling`, `const ReasonLate`: Reasons a decision record does not count.
 - `const ReasonAfterExpiry`: ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it was stamped before the deadline.
 - `const ReasonNoCert`, `const ReasonCertChain`, `const ReasonCertIdentity`, `const ReasonCertUsage`, `const ReasonCertWindow`: Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md).
 - `const ReasonRevoked`: ReasonRevoked: a certificate of the chain has an effective revocation time at or before A(d).
@@ -426,6 +426,8 @@ ApprovalPolicy declares a human approval gate.
 
 - `func (p *ApprovalPolicy) Clone() *ApprovalPolicy`: Clone returns a copy of p that shares nothing with it (a SingleApproval stays one), or nil for nil.
 - `func (p ApprovalPolicy) MarshalJSON() ([]byte, error)`: MarshalJSON encodes the policy as the journal records it: SingleApproval as {"single":true}, the bide protocol's wire form of the one-decision gate, so an offline reader sees the gate a call ran under without inferring it from a shape; any other policy as {"need":k,"approvers":`...`}, with "exclude\_principal":true when ExcludePrincipal is set (omitted otherwise, so a policy without it encodes as it did before the field existed).
+- `func (p ApprovalPolicy) SeparatedFrom(own string) ApprovalPolicy`: SeparatedFrom returns a copy of p that excludes the approvers the terminal tally of the gate on subject own counted: the rule the escalation Gate of a taint policy that separates approvers (TaintPolicy.SeparateApprovers) is counted under on a call's instance, for an offline recount (audit.VerifyApprovals, with the own gate's tally among the evidence).
+- `func (p ApprovalPolicy) SeparatedFromSubject() string`: SeparatedFromSubject is the subject of the own gate p is kept apart from (SeparatedFrom), "" for none.
 - `func (p *ApprovalPolicy) UnmarshalJSON(b []byte) error`: UnmarshalJSON decodes what MarshalJSON encodes, strictly, as the bide protocol writes the gate: {"single":true}, with no other member, is SingleApproval; any other policy has need (and approvers, and optionally exclude\_principal) and no single.
 - `func (p ApprovalPolicy) Validate() error`: Validate reports whether the policy is well formed: at least one approver, every approver id non-empty printable ASCII, no two ids the same approver, and 1 &lt;= Need &lt;= len(Approvers).
 - `func (p ApprovalPolicy) ValidateKeys(verifierFor ApproverVerifierFor) error`: ValidateKeys reports whether the policy is well formed (Validate) and holds one seat per signing key under verifierFor: it resolves every approver once and refuses, with ErrConfig, a nil verifierFor, an approver whose verifier reports no key identity (an empty KeyIDs, or an empty entry), and two approvers whose verifiers report a common key identity.
@@ -503,6 +505,8 @@ type ApprovalTally struct {
 
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 	Requesters       []string `json:"requesters,omitempty"`
+
+	ExcludedBySibling []string `json:"excluded_by_sibling,omitempty"`
 
 	Records []string `json:"records,omitempty"`
 
@@ -3713,6 +3717,8 @@ type TaintPolicy struct {
 	Refuse bool
 
 	RequireProvenance bool
+
+	SeparateApprovers bool
 }
 ```
 

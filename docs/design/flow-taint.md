@@ -1,8 +1,8 @@
 # Design: taint in plan flows, and its view in the flow editor
 
-Status: Part A is built except `SeparateApprovers` (the run-time rule, the declarations in `run:start`, Conform,
-nested flows and the sink for taint coming up are enforced; the disjoint-approvers option is the pull request
-that follows) and Part B (the view in `bide check` and the editor) is not. This text was written before the
+Status: Part A is built (the run-time rule, the declarations in `run:start`, Conform, nested flows, the sink for
+taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B (the view in `bide check` and the
+editor) is in progress. This text was written before the
 code and keeps its original wording where the code follows it; "today" in section 0 means `main` at the commit
 named below. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
@@ -275,6 +275,15 @@ instance cannot count for the other (the signature binds the subject key, `stale
   certificate-bound gate the decider identity is the approver name, not the certificate subject; the
   approver-identity design is the future layer for both.
 - Names: one exported field. Flag: none. Config key: none.
+- As built (3d): the field is `TaintPolicy.SeparateApprovers`; the instance's gate is a copy of the policy's Gate
+  that remembers the own gate's subject (unexported, so in no digest or journaled form), and the count reads the
+  own gate's terminal tally from the journal, excluding the approvers it counted (`excluded_by_sibling`, also in
+  `Excluded`, so too few left is `Unreachable`, a recorded denial). The instance never writes the own gate's
+  records. A call whose own gate is a cap rule's is not separated (the cap gate is chosen per call, and the
+  registration check cannot see it). Offline: the evidence of an instance carries the own gate's tally, and
+  `ApprovalPolicy.SeparatedFrom(ownSubject)` with `audit.VerifyApprovals` (CLI: `-separate-from`) recounts with
+  the same exclusion; the viewer, `bide approve -list`, the approvals intake and the notifier do not show the
+  exclusion yet (the engine ignores an excluded approver's decision all the same).
 
 **Options a flow run takes.** `Flow.Run` takes `WithIdentity` through `journalhook.RunIdentity` today. It
 also takes `WithUntrustedInput` / `WithTrustedInput`, recorded in the start settings; a drive's option that

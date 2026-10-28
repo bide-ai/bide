@@ -119,6 +119,21 @@ run and not asked; the model reads an error result.
 - **The `gate-reason` record** says why the call was held: the sources and positions of the marks and the
   escalation policy's digest. It is evidence for the approver and the auditor, and never authority: the engine
   recomputes the reasons and enforces the union, so a record can add a requirement and never remove one.
+- **`SeparateApprovers` (experimental) makes the second look a second person's.** Without it nothing stops one
+  approver approving both a call and its escalation instance, so the intended second look can be one person. With
+  `agent.TaintPolicy{..., SeparateApprovers: true}`, the instance's tally leaves out the approvers whose decisions
+  the call's own gate counted (the terminal tally the own gate recorded: approvers and deniers alike), the gate
+  records them as `excluded_by_sibling`, and when too few approvers are left to reach the Gate's `Need`, the
+  instance is denied, not left waiting. It is checked at `New` too: a tool that can be escalated (it can have a side
+  effect, and is not `TaintExempt`) with an own gate must have an m-of-n one whose approvers share no ID with the
+  policy's Gate (compared as written, ignoring ASCII case, before any requester exclusion), or `New` is `ErrConfig`
+  naming the tool and the shared IDs; a `SingleApproval` own gate, or a `SingleApproval` or `Refuse` policy, is
+  `ErrConfig` with it set, since a single decision has no approver ID to keep apart. The own gate is never
+  recounted because of the instance. It is in the declarations digest only when set, and `bide doctor -diff` reports
+  its removal as weakened. `bide audit verify-approvals -separate-from <own gate's subject>` (and
+  `audit.VerifyApprovals` with `ApprovalPolicy.SeparatedFrom`) recounts an instance with the same exclusion, from the
+  own gate's tally that the evidence carries. It works on approver IDs, not people: two IDs of one person are not
+  told apart, and in a certificate-bound gate the decider is the approver name, not the certificate's subject.
 - **`RequireProvenance` (experimental) leaves nothing unclassified by omission.** With
   `agent.TaintPolicy{..., RequireProvenance: true}`, a tool that declares neither `Untrusted` nor `Trusted`
   (`TaintExempt` does not count) is `ErrConfig` at `agent.New`, naming the tool, and so is a tool that declares
@@ -200,9 +215,11 @@ It is experimental, like the rest of the policy, and Go only: a config cannot gi
   `subagent:<node name>`, which over-taints, on that path only. A flow with no policy records the sources its nodes
   declare in `run:start` (`taint_sources`, only when it declares some), so it marks what it reads too; they gate
   nothing in it, and a drive by a flow that declares other sources is `ErrConfig`. A run that began outside taint sends them up too when a tainted node's body drives it.
-- **Not built:** `SeparateApprovers` (an approver of the node's own gate counted again on its instance), a
-  `Trusted` block that brings nothing up (a node that declares its results trusted still takes the marks its nested
-  flows and agents bring up), and the view of all this in `bide check` and the editor.
+- **Separated approvers.** A flow policy with `SeparateApprovers` is held to the same rule: `Build` refuses a node
+  that can be escalated whose own gate is one decision, or shares an approver ID with the policy's Gate, and the
+  node's instance (`node:<name>:taint`) leaves out the approvers its own gate counted.
+- **Not built:** a `Trusted` block that brings nothing up (a node that declares its results trusted still takes the
+  marks its nested flows and agents bring up).
 
 ## Reviewing the declarations
 

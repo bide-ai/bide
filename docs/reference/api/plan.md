@@ -452,6 +452,8 @@ type TaintPolicyDescription struct {
 	Refuse bool `json:"refuse,omitempty"`
 
 	RequireProvenance bool `json:"require_provenance,omitempty"`
+
+	SeparateApprovers bool `json:"separate_approvers,omitempty"`
 }
 ```
 

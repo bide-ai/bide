@@ -864,11 +864,18 @@ the consequences of an injected request. It does not detect or prevent the injec
   exactly on every drive, so a policy or declaration change strands runs in flight until they are cancelled or
   restored; a loop asks once per iteration. A nested flow must use its parent's journal. `ResolveHalt` of a node
   writes the marks of the flows the node started before the result, so a resolution that then fails leaves marks
-  the flows did bring up. `SeparateApprovers` is not built. A `Trusted` node still takes the marks its nested
+  the flows did bring up. A `Trusted` node still takes the marks its nested
   flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
   whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check -blocks`
   and the typed editor read a description of the registered blocks, which carries the declarations of each block
   (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+- **`SeparateApprovers` works on approver IDs, and the displays do not show it yet.** Two IDs of one person are not told
+  apart, and in a certificate-bound gate the decider is the approver name, not the certificate's subject. The
+  engine ignores an excluded approver's decision on the instance (`excluded_by_sibling`), but the approve page, `bide
+  approve -list`, `bide view` and the notifier still list that approver as eligible; the offline recount
+  (`bide audit verify-approvals -separate-from`) and the journaled tally are exact. A call whose own gate is a cap
+  rule's is not separated. A policy that separates approvers makes `New` and `Build` refuse a tool or node that can be
+  escalated whose own gate is one decision or shares an approver with the policy's Gate.
 - **A `ResolveHalt` of a plan node in a run under taint can fail after its claim.** It writes the taint marks of the
   runs the node started before it records the result, reading their journals (and theirs) inside its 30 second
   lease; a `taint-mark:` or `taint-child:` record that does not read, or runs nested deeper than 64, fails it with

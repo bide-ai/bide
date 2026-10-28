@@ -92,6 +92,8 @@ type TaintPolicyDescription struct {
 	Refuse bool `json:"refuse,omitempty"`
 	// RequireProvenance: every node declares a provenance.
 	RequireProvenance bool `json:"require_provenance,omitempty"`
+	// SeparateApprovers: the escalation gate's approvers exclude those a node's own gate counted.
+	SeparateApprovers bool `json:"separate_approvers,omitempty"`
 }
 
 // DescribeTaintPolicy is p as a TaintPolicyDescription, for RegistryDescription.TaintPolicy, or an error
@@ -102,7 +104,7 @@ func DescribeTaintPolicy(p agent.TaintPolicy) (*TaintPolicyDescription, error) {
 	if err := toolhook.CheckTaintPolicy(p); err != nil {
 		return nil, err
 	}
-	return &TaintPolicyDescription{Gate: describeGate(p.Gate), Refuse: p.Refuse, RequireProvenance: p.RequireProvenance}, nil
+	return &TaintPolicyDescription{Gate: describeGate(p.Gate), Refuse: p.Refuse, RequireProvenance: p.RequireProvenance, SeparateApprovers: p.SeparateApprovers}, nil
 }
 
 // GateDescription is an approval gate declared in Go.

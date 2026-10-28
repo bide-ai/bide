@@ -208,7 +208,7 @@ func nodeReasons(t *testing.T, j *Journal, key string) (gateReasonRecord, bool) 
 }
 
 func decide(j *Journal, key string, s Safety, standing int) (journalhook.FlowTaintDecision, error) {
-	return flowTaintNode(context.Background(), j, "r1", key, s, standing)
+	return flowTaintNode(context.Background(), j, "r1", key, s, standing, false)
 }
 
 func TestFlowTaintNode(t *testing.T) {
@@ -421,7 +421,7 @@ func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
 	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil), nil, nil); !errors.Is(err, ErrStorage) {
 		t.Errorf("Enter for another run with rA's context: %v, want ErrStorage", err)
 	}
-	if _, err := flowTaintNode(ctxA, jb, "rB", "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintNode(ctxA, jb, "rB", "node:pay", Safety{}, journalhook.FlowTaintUnder, false); !errors.Is(err, ErrStorage) {
 		t.Errorf("the node decision for another run with rA's context: %v, want ErrStorage", err)
 	}
 	// For its own run the bound start answers without a read of the journal.

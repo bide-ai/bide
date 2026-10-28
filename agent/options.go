@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -326,7 +327,53 @@ func (c *agentConfig) finish() error {
 	if err := a.checkProvenance(); err != nil {
 		return err
 	}
+	if err := a.checkSeparation(); err != nil {
+		return err
+	}
 	a.sortSpecs()
+	return nil
+}
+
+// checkSeparation holds the tools to a policy that separates approvers (TaintPolicy.SeparateApprovers): a tool
+// that can be escalated (it can have a side effect and is not exempt) and has an own gate needs that gate to be
+// m-of-n, and its approvers to share no ID with the policy's Gate, or the intended second look could be one
+// person. It runs after every option, so the order of options does not matter, over the final tool set
+// (delegated and sub-agent tools included); a read-only or exempt tool is skipped.
+func (a *Agent) checkSeparation() error {
+	if a.taint == nil || !a.taint.SeparateApprovers {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
+		s := a.specs[name]
+		own := effectiveGates(s, gateInputs{}).Own()
+		if own == nil || !tracked(s.Safety) || s.TaintExempt != "" {
+			continue
+		}
+		if err := separationProblem(own, a.taint.Gate); err != nil {
+			return fmt.Errorf("agent: tool %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// separationProblem is why own, the own gate of a call that can be escalated, cannot be kept apart from
+// escalation, the policy's Gate: either is one decision (no approver IDs), or they name a person in common.
+// The IDs are compared as written, before any requester exclusion, so the check does not depend on who started
+// a run.
+func separationProblem(own, escalation *ApprovalPolicy) error {
+	if own.single() {
+		return fmt.Errorf("its own gate is one decision (SingleApproval) and the taint policy separates approvers: a single gate has no approver IDs to keep apart; make it m-of-n, or declare the tool TaintExempt: %w", ErrConfig)
+	}
+	var shared []string
+	for _, id := range own.Approvers {
+		if slices.ContainsFunc(escalation.Approvers, func(e string) bool { return SameApprover(id, e) }) && !slices.Contains(shared, id) {
+			shared = append(shared, id)
+		}
+	}
+	if len(shared) > 0 {
+		slices.Sort(shared)
+		return fmt.Errorf("its own gate and the taint policy's Gate share the approvers %s, and the policy separates approvers: the second look could be one person; give the gates disjoint approvers: %w", strings.Join(shared, ", "), ErrConfig)
+	}
 	return nil
 }
 

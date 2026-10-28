@@ -1913,6 +1913,8 @@ Usage of bide audit verify-approvals:
     	approvals the policy requires (k)
   -pubkey string
     	the log's public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
+  -separate-from string
+    	for an escalation instance ("<call>#taint", "node:<name>:taint") under a taint policy that separates approvers: the subject of the call's or node's own gate, whose counted approvers do not count here; the evidence must prove that gate's tally
 ```
 
 ### bide audit verify-convergence
