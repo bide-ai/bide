@@ -873,7 +873,7 @@ the consequences of an injected request. It does not detect or prevent the injec
   gate the decider is the approver name, not the certificate's subject. A call whose own gate is a cap rule's is not
   separated (the cap gate is chosen per call, and the registration check cannot see it). The displays read the call's
   gate-reason record (`separate_approvers`, written only for a call that has an own gate) to know that an instance is
-  separated; a journal whose record lacks it shows the approvers as eligible, though the engine ignores them.
+  separated; a journal whose record lacks it shows the approvers as eligible, though the engine ignores them. The engine never reads the record (it counts from its policy), so an edited record cannot un-separate a gate; `Flow.Conform` holds a flow run's record to the declarations the run started under, and an agent run records only a digest of its policy, so an edited record there changes the displays alone.
 - **A `ResolveHalt` of a plan node in a run under taint can fail after its claim.** It writes the taint marks of the
   runs the node started before it records the result, reading their journals (and theirs) inside its 30 second
   lease; a `taint-mark:` or `taint-child:` record that does not read, or runs nested deeper than 64, fails it with
