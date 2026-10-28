@@ -198,6 +198,7 @@ var redactionClasses = []struct {
 	{"cap-release:", classProtected, "why the loop released a call's slot: an audit holds each release to it"},
 	{"gate-reason:", classProtected, "why a call was gated: evidence for the approvers' decision"},
 	{"taint-mark:", classProtected, "a taint mark a plan flow node's child brought up: the read set of the nodes after it is counted from it"},
+	{"taint-child:", classProtected, "a run a plan flow node under taint started: a ResolveHalt of the node folds the marks it learned"},
 }
 
 // classOf returns the class of the record key name, and whether a line above names its family.

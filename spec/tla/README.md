@@ -1027,7 +1027,7 @@ decision here is their first valid one; model 1b checks the counting rule over s
 invalid records, and that a counted signature binds the request's input is checked by Go tests
 (`plan/gate_test.go`), not by this model.
 
-Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; the enforcement core is built, and nested flows, the sink for taint coming up and `SeparateApprovers` are not). The same
+Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; the enforcement, nested flows and the sink for taint coming up are built, and `SeparateApprovers` is not). The same
 module models it: a run records its declarations in `run:start` (the policy, the exempt nodes, the
 declared sources: `rdecl`, first writer wins) and each drive, which may be run under other
 declarations (`DeclNames`: no policy, Gate, Refuse, dropped sources, an added exemption), compares
@@ -1071,9 +1071,14 @@ Not modelled for inherited taint (owner: the Go pull request named):
 |---|---|---|
 | which marks (names) are passed, and the canonical list (one per source, first ref kept, so the list passed down does not grow with depth) | the model has presence only, no list | 3c-2, built: `TestFlowTaint_TheInheritedListDoesNotGrowDownAChain` (a flow -> node -> flow -> node run: one entry per source at every depth, the first ref kept) and `TestCanonicalInherited_ChainDoesNotGrow` |
 | a drive carrying a different non-empty list than the recorded one | no list identity | 3c-2, built: `TestFlowTaintEnter_HoldsTheInheritedMarks` and `TestFlowTaint_ANestedFlowWithItsOwnPolicyInheritsTheMarks` (that drive is ErrConfig) |
-| `ResolveHalt` refusing until the sink is drained | the fold is modelled instead | 3c-3: the resolve path |
-| the sink sends marks the child learned as the child's own marks; transitivity up a chain depends on that | the model has one level | 3c-3: a mark learned by a grandchild reaches the root through the child's own record |
-| a parent node after the child is gated through the sink record | modelled as above (`ParentGated`) | 3c-3: a parent node after the child needs its instance through the sink record, after a crash between the child's record and the sink, and after `ResolveHalt` of the parent node |
+| `ResolveHalt` refusing until the sink is drained | the fold is modelled instead | 3c-3, built: `TestFlowTaintSink_AResolveHaltOfTheParentNodeFoldsTheChildsMarks`, `TestFlowTaintSink_AResolveHaltFoldsOnlyTheChildrenOfItsNode` (the fold, not a refusal) |
+| the sink sends marks the child learned as the child's own marks; transitivity up a chain depends on that | the model has one level | 3c-3, built: `TestFlowTaintSink_APolicylessChildSendsUpWhatItsOwnChildBroughtUp` (a mark learned by a grandchild reaches the root through the child's own record), `TestFlowTaintSink_AResolveHaltFoldsTheMarksOfGrandchildren` |
+| a parent node after the child is gated through the sink record | modelled as above (`ParentGated`) | 3c-3, built: `TestFlowTaintSink_AChildsMarkGatesTheParentsNextNode`, `TestFlowTaintSink_ACrashBetweenTheChildsRecordAndTheSinkLosesNothing`, `TestFlowTaintSink_AResolveHaltOfTheParentNodeFoldsTheChildsMarks`, `TestFlowTaintSink_AChildFinishedWithoutItsParentStillSends` |
+| the child's link (`taint-child:`) in the parent's journal, which the fold follows, and a nested run having to use its parent's journal | the model knows which run is the child, and has one journal | 3c-3, built: `TestFlowTaintSink_AChildInAnotherJournalIsRefused`, `TestLinkChild_HoldsTheChildToTheSinksJournal`, `TestFoldChildMarks_FollowsLinksReadsEveryRecordAndIsBounded` |
+| the sink for a run that finished (the model's `NGet` replays every node; a finished run is not replayed node by node) | the model has no early return for a finished run | 3c-3, built: `TestFlowTaintSink_AChildFinishedWithoutItsParentStillSends` |
+| the marks sent are the child's own, not the inherited ones (`NoEcho`) | modelled as presence; the Go test names the sources | 3c-3, built: `TestFlowTaintSink_TheChildSendsItsOwnMarksNotTheOnesItInherited` |
+| marks crossing engine kinds: an agent a node's body runs (hands its own marks up before the node's record), and a flow run as an agent's tool (marks the tool result `subflow:<tool>`) | the model has flow children only | 3c-3, built: `TestFlowTaintSink_AnAgentTheBodyRunsBringsItsMarksUp`, `..._ACrashBetweenTheAgentsMarksAndTheNodesRecordLosesNothing`, `..._AnAgentInAnotherJournalStillBringsItsMarksUp`, `..._AFlowRunAsAToolMarksTheResult` |
+| `ResolveHalt` of a node that drove an agent records `subagent:<node name>` (an over-taint) | the agent's marks are not in the journal | 3c-3, built: `TestFlowTaintSink_AResolveHaltOfANodeThatDroveAnAgentMarksItSubagent` |
 
 Not modelled, and who owns the Go test (none of these exists yet; the pull request named adds it). `SeparateReverse` is modelled (`GRetally`, `OwnGateStable`, below):
 
@@ -1089,7 +1094,7 @@ static analysis. The instance has no early decisions (a decision recorded before
 decision-after-request ordering for the instance is left to the Go pull request that adds the instance
 (3c), as is every other Go-side property of the key parsers.
 
-<!-- modelsync: no-code flows NSink PEnd PGate PX GRetally -->
+<!-- modelsync: no-code flows GRetally -->
 <!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
@@ -1107,11 +1112,11 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `TCount` | `flowGate`'s count for the instance subject (the same code as `GCount`, over the instance's own decisions after its request): a terminal tally, or a pause; the exclusion of the approvers the own gate counted under `SeparateApprovers`, and the denial when too few are left, are 3d |
 | `TPause` | `runGate`/`evalGate`: a denying instance tally stops the run (`plan.ErrApprovalDenied`); a passing one goes to the PreExecs |
 | `TPre` | `runGate`'s `preExec` (`journalhook.PreExec`) of the node gate and then of the instance, immediately before the node's Step: a certificate revoked after approval stops the node before the claim; a node whose result is recorded replays and runs no check |
-| `PGate` | (taint design, not built) the parent's later tracked node: its fold reads the sink's taint-mark record, so the child's mark makes it need its taint instance |
-| `PX` | (taint design, not built) that node's attempt claim: never ungated while the child's marks held |
 | `GRetally` | (taint design, A2 "Disjoint approvers", not built) `flowGate`'s re-tally of a recorded pass when separation of duties is in play: the own gate is never recounted because of the instance, so its pass is never superseded by it. The Go supersede is `agent/approval.go` and `agent/flowgate.go`'s re-tally under `ExcludePrincipal` (a passed tally recorded before the policy excluded the requester); the model has no principal, so there the re-tally has no cause but the instance, and the legitimate supersede is not modelled |
-| `NSink` | (taint design, C1 option B, not built) the context-bound mark sink after the node's record: the insert-once `taint-mark:<node key>:<source>` record in the parent's journal for an own mark of the child |
-| `PEnd` | (taint design, not built) the parent node that runs this flow gets its result, after the flow completed or through `Flow.ResolveHalt` of the halted node, which folds the child's marks into the parent's journal |
+| `NSink` | `sendMarks` (plan/sink.go) through `journalhook.FlowTaintSink` to `flowTaintSink` (agent/flow_taint_sink.go), called by `runNode`'s callers after the node's record, again whenever a drive replays a recorded node, and for a run that finished: the insert-once `taint-mark:<parent node key>:<source>` record in the parent's journal for each own mark of the run (`ownMarkSources`: the sources the node declares once its result is recorded, and the marks its own children brought up; never the inherited ones) |
+| `PEnd` | `foldChildMarks`, called by `resolveHalt` (agent/halt.go; `agent.ResolveHalt` and so `Flow.ResolveHalt`), after its checks and its claim of the next attempt and before it records the operator's result, for a plan node's key: the marks of the runs linked to the node (`taint-child:<node key>:<run ID>`, written when the nested run began) and, from their journals, of their children, go into the run's journal as the node's marks. A node that completes normally has its child's marks already (`NSink` ran inside its body) |
+| `PGate` | `flowReadSet` (agent/flow_taint.go), called by `flowTaintNode` for the parent's later tracked node: the `taint-mark` records of other nodes before it are marks of the read set, with the ref `child:<node key>`; a node's own children's marks are not read by the node |
+| `PX` | `runGate` (plan/gate.go): the node's escalation gate, or its refusal, is settled before `runNode`'s Step claims the attempt, so the claim is never reached ungated while the child's marks held |
 | `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
 
 | Property | Kind | Statement |
@@ -1199,7 +1204,7 @@ resolution through another flow or digest recorded a value this flow cannot read
 `ResultsTyped`, 13 states).
 
 Taint regressions (design mutants, each must fail with its property, in a few seconds with the default
-workers; the taint design is not built, so none is a found bug): `flows/regress/taint-no-gate` (no second
+workers; the taint design was written before the code, so none is a found bug): `flows/regress/taint-no-gate` (no second
 gate instance; `TaintGateHeld`), `taint-gate-unscoped` (the instance keyed per node, not per iteration;
 `TaintGateHeld`), `taint-reuse` (the node gate's decisions count for the instance; `TaintTallySound`),
 `taint-readset-resume-empty` (the read set kept in the drive's memory, lost on resume; `TaintGateHeld`),

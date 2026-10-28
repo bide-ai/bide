@@ -17,8 +17,7 @@ import (
 // The pure parts of taint in a plan flow (docs/design/flow-taint.md, A2 and A3): the declarations a flow run
 // starts under, recorded in run:start and compared exactly on every drive; the read set a node has at a point
 // in the run's journal; the requirement that read set makes of a node; and the taint-mark record a node's
-// child leaves. Nothing here is reached by a running flow yet: the engine wires it in a later change, and
-// package plan refuses a flow that declares taint until then.
+// child leaves. Package plan reaches it through the hooks in flow_taint_hooks.go and flow_taint_sink.go.
 
 // flowTaintDeclarationsFormat tags the declarations a flow run records in run:start.
 const flowTaintDeclarationsFormat = "bide.flow-taint-declarations.v1"
@@ -259,6 +258,8 @@ func decodeTaintMark(r Record) (taintMarkRecord, error) {
 	return rec, nil
 }
 
+// protocol:flows begin PGate
+
 // flowReadSet is the marks the node with key self has read at position before of the run's journal recs, the
 // unfiltered History: positions are indexes into it, so a copy with records left out (a header, a not-started
 // marker) gives other positions and so other reasons. It is the inherited marks, then in journal order the run's input when its start declares it untrusted, the declared sources of
@@ -310,6 +311,8 @@ func flowReadSet(recs []Record, d flowTaintDecls, before int, self string, inher
 	}
 	return marks, nil
 }
+
+// protocol:flows end
 
 // flowRequirement is what taint requires of a node about to run.
 type flowRequirement struct {
@@ -370,4 +373,76 @@ func digestPrefix(raw json.RawMessage) string {
 		d = d[:12]
 	}
 	return d
+}
+
+// extTaintSources is the key of run:start's ext member that holds the sources a flow with no taint policy declares:
+// node name to its sorted sources. A flow with a policy records them in its declarations; one with none records
+// them here, and only when a node declares one, so a flow that declares nothing starts as it always did. They
+// gate nothing. They are what the run's own marks are counted from, for the node that started it.
+const extTaintSources = "taint_sources"
+
+// withDeclaredSources returns s recording the sources src (a new Ext map). Nothing is recorded for none.
+func (s RunStart) withDeclaredSources(src map[string][]string) RunStart {
+	if len(src) == 0 {
+		return s
+	}
+	ext := maps.Clone(s.Ext)
+	if ext == nil {
+		ext = map[string]json.RawMessage{}
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		panic(fmt.Sprintf("agent: encode the flow's declared sources: %v", err))
+	}
+	ext[extTaintSources] = b
+	s.Ext = ext
+	return s
+}
+
+// declaredSources reads the sources a policyless flow's start records, strictly: every node has at least one,
+// sorted, once each, valid names. A member that is not so is ErrStorage.
+func (s RunStart) declaredSources() (map[string][]string, error) {
+	raw, ok := s.Ext[extTaintSources]
+	if !ok {
+		return nil, nil
+	}
+	var m map[string][]string
+	if err := strictjson.Unmarshal(raw, &m, nil); err != nil || len(m) == 0 {
+		return nil, fmt.Errorf("agent: run:start's %s does not read: %w", extTaintSources, ErrStorage)
+	}
+	for node, l := range m {
+		if node == "" || len(l) == 0 {
+			return nil, fmt.Errorf("agent: run:start's %s names a node with no source: %w", extTaintSources, ErrStorage)
+		}
+		for i, src := range l {
+			if checkProvenanceName("declared source", src) != nil || i > 0 && l[i-1] >= src {
+				return nil, fmt.Errorf("agent: run:start's %s is not in the canonical form (sorted, once each, valid names): %w", extTaintSources, ErrStorage)
+			}
+		}
+	}
+	return m, nil
+}
+
+// nodeSources are the sources each node of the flow that started s declares: from the declarations a policy
+// flow records, or from the sources a policyless one does.
+func (s RunStart) nodeSources() (map[string][]string, error) {
+	d, ok, err := s.flowTaintDecls()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return s.declaredSources()
+	}
+	out := map[string][]string{}
+	for name, n := range d.normalized().Nodes {
+		if len(n.Untrusted) > 0 {
+			out[name] = n.Untrusted
+		}
+	}
+	return out, nil
+}
+
+// sameSources reports whether two source maps are equal.
+func sameSources(a, b map[string][]string) bool {
+	return maps.EqualFunc(a, b, slices.Equal[[]string])
 }

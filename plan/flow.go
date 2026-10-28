@@ -97,8 +97,7 @@ type Flow[In, Out any] struct {
 // is ErrConfig). WithIdentity gives the identity the run acts under, as an agent run's. The other two say
 // where the run's input came from (the source of untrusted content, or the reason it is the host's own; at
 // most one): they are recorded in run:start's settings, and a later drive that states another source is
-// ErrConfig. Their taint effects need a taint policy (Builder.WithTaintPolicy), which Build refuses until
-// flow taint is enforced. Without WithIdentity the identity ctx carries applies (a flow run started inside
+// ErrConfig. Their taint effects need a taint policy (Builder.WithTaintPolicy). Without WithIdentity the identity ctx carries applies (a flow run started inside
 // an agent run's tool call inherits that run's). The run journals the identity's principal
 // (OnBehalfOf, AuthorityRef) with its start, in its run:principal and run:start, as an agent run
 // does: a later drive under another principal is ErrConfig, a drive that passes none runs under the
@@ -151,7 +150,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	}
 	// The flow's taint declarations are recorded with the start of a run that starts under a policy; a policy
 	// that requires provenance refuses a new run that states none, before the run's journal is written.
-	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint(), c.trackedNames(), inheritsTaint())
+	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint(), c.trackedNames(), c.declaredSources())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
@@ -162,13 +161,21 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
 	// protocol:flows end
+	// A tool call that drives the run (a flow used as an agent tool) gets its answer marked when the run ended
+	// with a mark, a finished run's included.
+	journalhook.FlowTaintDriven(ctx, store, runID)
 	if finished {
+		// A run that finished is not replayed node by node, and a drive without its parent may have finished
+		// it: its parent still gets every mark it learned.
+		if err := sendMarks(ctx, store, runID, c, nil, ""); err != nil {
+			return out, err
+		}
 		return decodeCompletion[Out](c.flowName, runID, done)
 	}
 	// Every drive is compared with the declarations the run started under before a node runs: a different
 	// policy or declaration is ErrConfig, and a flow with no policy driving a run that started under one
 	// refuses its side-effecting nodes.
-	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), c.trackedNames(), inheritsTaint())
+	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), c.trackedNames(), c.declaredSources())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
@@ -348,6 +355,9 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		if runErr != nil {
 			return out, runErr
 		}
+		if err := sendMarks(ctx, store, runID, c, node, nodeKey(name)); err != nil {
+			return out, err
+		}
 		results[name] = result
 
 		// Route onward, marking live successors. A switched node routes ONLY through
@@ -492,6 +502,9 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID
 			result, runErr := runNode(bodyCtx, store, runID, c.model, node, iterNodeKey(iter, name), input)
 			if runErr != nil {
 				return "", nil, runErr
+			}
+			if err := sendMarks(ctx, store, runID, c, node, iterNodeKey(iter, name)); err != nil {
+				return "", nil, err
 			}
 			results[name] = result
 			if name == lp.over {
@@ -655,6 +668,10 @@ func runNode(ctx context.Context, store *agent.Journal, runID string, model agen
 		}
 		if runErr != nil {
 			return nil, runErr
+		}
+		// The agent runs the body drove hand their marks up before the node is recorded.
+		if err := journalhook.FlowTaintBodyDone(ctx, store, runID, key); err != nil {
+			return nil, fmt.Errorf("plan: step %q: hand the marks of the runs it drove up: %w", node.name, err)
 		}
 		encoded, encErr := journalhook.Marshal(result)
 		if encErr != nil {

@@ -91,7 +91,6 @@ func inherited(t *testing.T, s agent.RunStart) []map[string]string {
 }
 
 func TestFlowTaint_ANestedFlowWithItsOwnPolicyInheritsTheMarks(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	c := child(t, "child", single(), false)
@@ -136,7 +135,6 @@ func isPendingAt(err error, key string) bool {
 }
 
 func TestFlowTaint_ANestedFlowWithNoPolicyRunsOnlyNodesThatCannotHaveASideEffect(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	side := child(t, "side", nil, false)
@@ -174,7 +172,6 @@ func TestFlowTaint_ANestedFlowWithNoPolicyRunsOnlyNodesThatCannotHaveASideEffect
 // flow -> node -> flow -> node: the inherited list does not grow down the chain: one entry per source, in
 // canonical order, the first ref kept ("parent:" once, never repeated).
 func TestFlowTaint_TheInheritedListDoesNotGrowDownAChain(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	n := &nested{t: t, j: j, errs: map[string]error{}}
@@ -217,7 +214,6 @@ func TestFlowTaint_TheInheritedListDoesNotGrowDownAChain(t *testing.T) {
 // The body of a read-only node in a run under taint runs under its status even though the node needs no gate:
 // what it starts inherits.
 func TestFlowTaint_ABodyRunsUnderTheRunsTaintWhetherOrNotTheNodeIsGated(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	n := &nested{t: t, j: j, errs: map[string]error{}}
@@ -240,7 +236,6 @@ func TestFlowTaint_ABodyRunsUnderTheRunsTaintWhetherOrNotTheNodeIsGated(t *testi
 // An agent started by the body of a tainted node inherits what a flow child does: with a taint policy its first
 // turn is tainted, so its side effect waits at its escalation gate; with none, a side effect is refused.
 func TestFlowTaint_AnAgentStartedByATaintedNodeInheritsTheTaint(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	ran := 0
@@ -275,7 +270,6 @@ func TestFlowTaint_AnAgentStartedByATaintedNodeInheritsTheTaint(t *testing.T) {
 // Conform recomputes a nested flow's obligations with the marks it inherited: a node that ran after nothing of
 // the flow's own needed its gate because of them.
 func TestFlowTaintConform_ANestedFlow(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	c := child(t, "child", single(), false)
@@ -355,7 +349,6 @@ func copyWithout(t *testing.T, j *agent.Journal, run string, skip func(name stri
 
 // A loop body node's body runs under the taint too, in every iteration.
 func TestFlowTaint_ALoopBodyRunsUnderTheRunsTaint(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	n := &nested{t: t, j: j, errs: map[string]error{}}
@@ -391,85 +384,33 @@ func TestFlowTaint_ALoopBodyRunsUnderTheRunsTaint(t *testing.T) {
 	}
 }
 
-// In production the inheritance is off until flow taint is enforced as a whole: a flow that a tool of an agent under
-// a taint policy runs, with no taint policy of its own and a node that can have a side effect, runs as it did (the
-// agent's escalation gate on the tool call is its control), and is not refused for a policy Build would not let it
-// have. With the inheritance on (tests) the same flow is refused.
-func TestFlowTaint_InheritanceIsOffInProduction(t *testing.T) {
+// A flow that a tool of an agent under a taint policy runs, with no taint policy of its own and a node that can
+// have a side effect, is refused at Begin: the agent's escalation gate on the tool call is not the flow's
+// control, and a flow cannot run a side effect under taint without a policy to enforce.
+func TestFlowTaint_APolicylessFlowRunAsATaintedAgentsToolIsRefused(t *testing.T) {
 	ctx := context.Background()
-	for _, on := range []bool{false, true} {
-		taintGuardOff, taintInheritOn = true, on // the guard is off so the flow may be built; no declaration is made
-		j := agenttest.MemJournal()
-		var flowErr error
-		ran := 0
-		cb := New[int, int]("tool-flow")
-		cb.Step("pay", func(_ context.Context, v int) (int, error) { ran++; return v, nil })
-		cf, err := cb.Build()
-		if err != nil {
-			t.Fatal(err)
-		}
-		read := agent.MustFunc("read", "reads", func(context.Context, struct{}) (string, error) { return "text", nil },
-			agent.WithSafety(agent.Safety{ReadOnly: true, Untrusted: "inbox"}))
-		runflow := agent.MustFunc("runflow", "runs a flow", func(c context.Context, _ struct{}) (string, error) {
-			_, flowErr = cf.Run(c, j, "child", 1)
-			return "ok", nil
-		}, agent.TaintExempt("the flow is the control under test"))
-		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "read", `{}`), agenttest.ToolTurn("c2", "runflow", `{}`), agenttest.TextTurn("done"))
-		a := agenttest.MustNew(m, j, agent.WithTools(read, runflow), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}))
-		_, err = a.Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the host's own"))
-		taintGuardOff, taintInheritOn = false, false
-		if err != nil {
-			t.Fatalf("on=%v: the agent run: %v", on, err)
-		}
-		switch {
-		case !on && (flowErr != nil || ran != 1):
-			t.Errorf("inheritance off: the flow %v, pay ran %d; want it to run as it did", flowErr, ran)
-		case on && (!errors.Is(flowErr, agent.ErrConfig) || ran != 0):
-			t.Errorf("inheritance on: the flow %v, pay ran %d; want it refused at Begin", flowErr, ran)
-		}
-	}
-}
-
-// With the switch off (production), the body of a node in a run under taint runs under the context the drive has,
-// as it did: an agent a node's body starts is not tainted by it, whatever the flow's policy says. (A flow with a
-// policy exists here only because the test turns the guard off.)
-func TestFlowTaint_WithTheSwitchOffABodyRunsAsItDid(t *testing.T) {
-	ctx := context.Background()
-	taintGuardOff, taintInheritOn = true, false
-	defer func() { taintGuardOff, taintInheritOn = false, false }()
 	j := agenttest.MemJournal()
+	var flowErr error
 	ran := 0
-	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { ran++; return "ok", nil })
-	var agentErr error
-	b := New[int, int]("parent").WithTaintPolicy(*single())
-	fetch := b.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, Untrusted("inbound-email"))
-	call := b.Step("call", func(c context.Context, v int) (int, error) {
-		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
-		_, agentErr = agenttest.MustNew(m, j, agent.WithTools(tool), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()})).Run(c, "agent", agent.UserText("go"), agent.WithTrustedInput("the flow's own"))
-		return v, nil
-	}, ReadOnly())
-	b.Edge(fetch, call)
-	f, err := b.Build()
+	cb := New[int, int]("tool-flow")
+	cb.Step("pay", func(_ context.Context, v int) (int, error) { ran++; return v, nil })
+	cf, err := cb.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Run(ctx, j, "p1", 1); err != nil {
-		t.Fatal(err)
+	read := agent.MustFunc("read", "reads", func(context.Context, struct{}) (string, error) { return "text", nil },
+		agent.WithSafety(agent.Safety{ReadOnly: true, Untrusted: "inbox"}))
+	runflow := agent.MustFunc("runflow", "runs a flow", func(c context.Context, _ struct{}) (string, error) {
+		_, flowErr = cf.Run(c, j, "child", 1)
+		return "ok", nil
+	}, agent.TaintExempt("the flow is the control under test"))
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "read", `{}`), agenttest.ToolTurn("c2", "runflow", `{}`), agenttest.TextTurn("done"))
+	a := agenttest.MustNew(m, j, agent.WithTools(read, runflow), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}))
+	if _, err = a.Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the host's own")); err != nil {
+		t.Fatalf("the agent run: %v", err)
 	}
-	if agentErr != nil || ran != 1 {
-		t.Errorf("the agent a tainted node's body started: %v, the tool ran %d times; want it to run as on a flow that is not under taint", agentErr, ran)
-	}
-	// Its start is what the same agent records outside any flow: its own policy's digest, no inherited marks.
-	s, ok, _ := agent.RecordedStart(ctx, j, "agent")
-	jb := agenttest.MemJournal()
-	mb := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
-	_, _ = agenttest.MustNew(mb, jb, agent.WithTools(tool), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()})).Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the flow's own"))
-	base, _, _ := agent.RecordedStart(ctx, jb, "agent")
-	if !ok || len(s.Ext) != len(base.Ext) || string(s.Ext["taint_policy_digest"]) != string(base.Ext["taint_policy_digest"]) {
-		t.Errorf("the agent's start records %v, and outside any flow %v; want the same", s.Ext, base.Ext)
-	}
-	if _, has := s.Ext["taint_inherited"]; has {
-		t.Error("the agent inherited marks with the switch off")
+	if !errors.Is(flowErr, agent.ErrConfig) || ran != 0 {
+		t.Errorf("the flow %v, pay ran %d; want it refused at Begin", flowErr, ran)
 	}
 }
 
@@ -477,7 +418,6 @@ func TestFlowTaint_WithTheSwitchOffABodyRunsAsItDid(t *testing.T) {
 // under taint it is refused at Begin, as a plain side effect is, with nothing written.
 func TestFlowTaint_AnIdempotentNodeInAPolicylessNestedFlowIsRefusedAtBegin(t *testing.T) {
 	ctx := context.Background()
-	allowTaint(t)
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	idem := child(t, "idem", nil, false, Idempotent())
 	p := n.parent("inbound-email", single(), map[string]*Flow[int, int]{"idem": idem})
@@ -497,7 +437,6 @@ func TestFlowTaint_AnIdempotentNodeInAPolicylessNestedFlowIsRefusedAtBegin(t *te
 // every drive) accepts it, with one entry.
 func TestFlowTaint_ARetrySafeNodeDrivenAgainPassesTheSameMarks(t *testing.T) {
 	ctx := context.Background()
-	allowTaint(t)
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	c := child(t, "c", single(), true, Approval(agent.SingleApproval()))
 	attempts := 0
@@ -548,7 +487,6 @@ func TestFlowTaint_ARetrySafeNodeDrivenAgainPassesTheSameMarks(t *testing.T) {
 // A run that started inside a tainted run under a flow with no policy runs no node that can have a side effect on
 // any drive: a flow redeployed with a node that now has one is refused before its read-only prefix runs.
 func TestFlowTaint_ARedeployedFlowWithASideEffectIsRefusedOnEveryDrive(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
 	looks := 0
@@ -594,7 +532,6 @@ func TestFlowTaint_ARedeployedFlowWithASideEffectIsRefusedOnEveryDrive(t *testin
 // runs when the flow has a node that can have a side effect, whether the run started at the top or inside a tainted
 // run; a flow of read-only nodes resumes.
 func TestFlowTaint_AFlowThatLostItsPolicyIsRefusedBeforeAnyNodeRuns(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	looks := 0
 	mk := func(pol *agent.TaintPolicy, payReadOnly bool) *Flow[int, int] {

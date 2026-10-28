@@ -23,7 +23,7 @@ var ErrApprovalDenied = errors.New("approval denied")
 // every later drive returns it.
 var ErrApprovalExpired = fmt.Errorf("%w (%w)", agent.ErrApprovalExpired, ErrApprovalDenied)
 
-// protocol:flows begin GRead GPause TRefuse TGate TPause TPre
+// protocol:flows begin GRead GPause TRefuse TGate TPause TPre PX
 
 // taintState is a drive's standing against the taint declarations its run started under, and the flow's
 // declarations (nil for a flow with no policy). A nil *taintState is a run that is not under taint.
@@ -56,8 +56,8 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 			return ctx, fmt.Errorf("plan: run %q: the taint check of step %q: %w", c.flowName, node.name, err)
 		}
 		escalationGate = dec.Gate
-		if dec.Ctx != nil && inheritsTaint() {
-			bodyCtx = dec.Ctx // the node's body runs under the run's taint status and its read set
+		if dec.Ctx != nil {
+			bodyCtx = dec.Ctx // the node's body runs under the run's taint status, its read set and its sink
 		}
 	}
 	if node.approval == nil && escalationGate == nil {

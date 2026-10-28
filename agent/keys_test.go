@@ -84,6 +84,7 @@ var keyConstructors = map[string]func(string) string{
 	},
 	"gateReasonStep": gateReasonStep,
 	"taintMarkStep":  func(s string) string { return taintMarkStep("node:"+s, "agent:"+s) },
+	"taintChildStep": func(s string) string { return taintChildStep("node:"+s, "run:"+s) },
 	"capReleaseStep": capReleaseStep,
 	"spendStep":      spendStep,
 	"lateSpendStep":  lateSpendStep,

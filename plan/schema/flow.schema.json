@@ -114,7 +114,7 @@
         "untrusted": {
           "type": "string",
           "minLength": 1,
-          "description": "Add a source of untrusted content to this node's results, from the named source (for example inbound-email). A config can only add a source, never remove one the block declares. Flow taint is not enforced yet, so Load refuses a config that sets it."
+          "description": "Add a source of untrusted content to this node's results, from the named source (for example inbound-email). A config can only add a source, never remove one the block declares. Under a flow's taint policy a node that can have a side effect, run after this node's result is recorded, needs the policy's escalation gate; without a policy the key gates nothing."
         }
       }
     },
@@ -215,7 +215,7 @@
             "untrusted": {
               "type": "string",
               "minLength": 1,
-              "description": "Add a source of untrusted content to the join node's results, as a node's untrusted does. Flow taint is not enforced yet, so Load refuses a config that sets it."
+              "description": "Add a source of untrusted content to the join node's results, as a node's untrusted does. Under a flow's taint policy a node that can have a side effect, run after this node's result is recorded, needs the policy's escalation gate; without a policy the key gates nothing."
             }
           }
         }

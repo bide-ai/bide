@@ -138,8 +138,8 @@ and [the formal models](../spec/tla/README.md).
 **Run IDs under `@cap/` and the cap and gate step-name prefixes are reserved.** `Run`, `Stream` and `Session`
 refuse a run ID that starts with `@cap/` (`ErrConfig`), as they refuse `@stop`, and `Step`,
 `Parallel` and `ResolveHalt` refuse a step name that starts with `slot:`, `cap-intent:`,
-`cap-reserve:`, `cap-release:`, `gate-reason:` or `taint-mark:`. The engine keeps cap ledgers and gate reasons under them,
-and will keep a plan flow's taint marks (`taint-mark:`) in a later release. `ClaimAttempt` claims bare attempt markers only: it refuses every reserved name except an attempt marker key (`attempt:`, not the engine's own `attempt:not-started:` and `attempt:retry:` forms) and any record that is not an attempt marker, so a caller
+`cap-reserve:`, `cap-release:`, `gate-reason:`, `taint-mark:` or `taint-child:`. The engine keeps cap ledgers and gate reasons under them,
+and the taint marks and child links of a plan flow (`taint-mark:`, `taint-child:`). `ClaimAttempt` claims bare attempt markers only: it refuses every reserved name except an attempt marker key (`attempt:`, not the engine's own `attempt:not-started:` and `attempt:retry:` forms) and any record that is not an attempt marker, so a caller
 with journal access cannot plant an engine record such as a `cap-intent:`, a tool result or a single-approver approval with it (v0.23.0 and earlier could). A caller with journal access can still pre-claim an `attempt:tool:<call>` marker: that halts the call (`OutcomeUnknown`), a denial of service in the safe direction, and it cannot admit the call or release a cap, because only a not-started record that carries the marker's own claim id voids an attempt. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
 `@cap/` run too (`@stop` keeps its old behaviour in them: they still write to it, a known gap left
 as it was). A run already named under `@cap/` keeps its journal, but `Recover`, the run viewer,
@@ -858,10 +858,33 @@ the consequences of an injected request. It does not detect or prevent the injec
   nor implements `Unwrap` is not seen: carrying the declaration through it is the wrapper author's duty.
 - **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
   carries no `Safety` and so no mark. A taint policy does not yet derive it from the tool's declaration by name.
-- **Plan flow nodes are not covered.** A flow can declare taint (`plan.Untrusted`, `plan.Trusted`,
-  `plan.TaintExempt`, a tool's own declarations, the `untrusted:` config key, a flow policy), but the engine does not
-  enforce it yet, so `plan.Flow` building (`Builder.Build`, `Load`) refuses a flow that declares any of it with
-  `ErrConfig`, rather than run it with no taint handling. A flow with no declaration and no policy is not taint-gated. `bide check -blocks` and the typed editor read a description of the registered blocks, which now carries the declarations of each block (version 2) but not the flow's policy unless the host sets it; `Load` refuses a flow that declares taint.
+- **Plan flows have a rule of their own, with these limits (experimental).** The policy is Go only (a config cannot
+  give a flow one); what a node has read is the run's journal in order, not a data edge, so a node after any
+  source in the run is gated whether or not it uses that source's output; the run's declarations are compared
+  exactly on every drive, so a policy or declaration change strands runs in flight until they are cancelled or
+  restored; a loop asks once per iteration. A nested flow must use its parent's journal. `ResolveHalt` of a node
+  writes the marks of the flows the node started before the result, so a resolution that then fails leaves marks
+  the flows did bring up. `SeparateApprovers` is not built. A `Trusted` node still takes the marks its nested
+  flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
+  whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check -blocks`
+  and the typed editor read a description of the registered blocks, which carries the declarations of each block
+  (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+- **A `ResolveHalt` of a plan node in a run under taint can fail after its claim.** It writes the taint marks of the
+  runs the node started before it records the result, reading their journals (and theirs) inside its 30 second
+  lease; a `taint-mark:` or `taint-child:` record that does not read, or runs nested deeper than 64, fails it with
+  an error after the claim of the next attempt, as a resolver that crashed between the claim and the write
+  would leave it, until the record is repaired. Safety does not depend on the lease past the claim.
+- **A run under taint reads its journal twice per node per drive.** The gate and the sink each fold it, with no cache, so a
+  mark is never counted late; the cost grows with the run's length.
+- **Adding a source to a node strands runs in flight.** A flow with no policy records the sources its nodes declare
+  in `run:start`, so a node that gains `Untrusted` (or loses it, or changes it) makes a drive of a run that
+  started before the change `ErrConfig`, as a changed policy does; cancel such runs, or restore the declaration.
+- **A run started under a flow taint policy is not safe to drive with v0.25.x or earlier.** Those releases ran plan
+  flows with no taint rule: they do not read `run:start`'s taint declarations or the `gate-reason`, `taint-mark`
+  and `taint-child` records, so they run a node that this release refused or held at its escalation gate
+  (`node:<name>:taint`). A run this release refused (`plan.ErrTaintRefused`) stays unfinished, and v0.25.x resumes it
+  and runs the refused node. Cancel such runs before a downgrade, and move the whole fleet to this release before
+  enabling a policy on a flow.
 - **MCP tools are not untrusted by default.** A tool bridged by `mcptools` declares nothing unless the host
   does: a server's results are outside text, and a host that does not mark them leaves no mark (with
   `RequireProvenance`, registration refuses the unmarked tool, which is how the omission is caught). A default

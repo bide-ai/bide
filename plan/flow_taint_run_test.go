@@ -11,15 +11,7 @@ import (
 	"github.com/bide-ai/bide/internal/identitygate"
 )
 
-// Enforcement of flow taint (docs/design/flow-taint.md, A2) through whole runs of a flow. The guard that
-// refuses a flow with taint declarations is turned off for these tests (allowTaint); it is removed with the
-// last part of the enforcement.
-
-func allowTaint(t *testing.T) {
-	t.Helper()
-	taintGuardOff, taintInheritOn = true, true
-	t.Cleanup(func() { taintGuardOff, taintInheritOn = false, false })
-}
+// Enforcement of flow taint (docs/design/flow-taint.md, A2) through whole runs of a flow.
 
 // taintRun is a flow of fetch (a source of untrusted content), then pay (a side effect), then notify (a read),
 // with counters of how many times each body ran.
@@ -41,7 +33,6 @@ type flowOpts struct {
 
 func newTaintRun(t *testing.T, o flowOpts) *taintRun {
 	t.Helper()
-	allowTaint(t)
 	r := &taintRun{t: t, j: agenttest.MemJournal(), runs: map[string]int{}}
 	r.f = r.build(o)
 	return r
@@ -237,7 +228,6 @@ func TestFlowTaint_RefuseStopsTheNodeAndLeavesItNoRecord(t *testing.T) {
 
 func TestFlowTaint_TheRunsUntrustedInputTaintsTheFirstNode(t *testing.T) {
 	// pay is the entry here, so only the run's input can taint it.
-	allowTaint(t)
 	ran := 0
 	b := New[int, int]("f").WithTaintPolicy(*single())
 	b.Step("pay", func(_ context.Context, n int) (int, error) { ran++; return n, nil })
@@ -286,7 +276,6 @@ func TestFlowTaint_ResumeUnderOtherDeclarationsRunsNoNode(t *testing.T) {
 	for what, o := range other {
 		if what == "a dropped source" {
 			// The source is declared by the helper; build a flow whose fetch declares nothing instead.
-			allowTaint(t)
 			b := New[int, int]("f").WithTaintPolicy(*single())
 			fetch := b.Step("fetch", func(_ context.Context, n int) (int, error) { r.runs["fetch"]++; return n, nil })
 			pay := b.Step("pay", func(_ context.Context, n int) (int, error) { r.runs["pay"]++; return n, nil })
@@ -337,7 +326,6 @@ func TestFlowTaint_AFlowWithNoPolicyRefusesASideEffectOfARunThatStartedUnderTain
 }
 
 func TestFlowTaint_RequireProvenance(t *testing.T) {
-	allowTaint(t)
 	pol := &agent.TaintPolicy{Gate: agent.SingleApproval(), RequireProvenance: true}
 	// A node with no declaration is a Build error naming it.
 	b := New[int, int]("f").WithTaintPolicy(*pol)
@@ -368,7 +356,6 @@ func TestFlowTaint_RequireProvenance(t *testing.T) {
 }
 
 func TestFlowTaint_AnM_of_nEscalationGateNeedsVerifiers(t *testing.T) {
-	allowTaint(t)
 	b := New[int, int]("f").WithTaintPolicy(agent.TaintPolicy{Gate: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}})
 	b.Step("a", func(_ context.Context, n int) (int, error) { return n, nil })
 	if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "approver verifiers") {
@@ -377,7 +364,6 @@ func TestFlowTaint_AnM_of_nEscalationGateNeedsVerifiers(t *testing.T) {
 }
 
 func TestFlowTaint_ALoopBodyAsksOncePerIteration(t *testing.T) {
-	allowTaint(t)
 	b := New[int, int]("loop").WithTaintPolicy(*single())
 	seed := b.Step("seed", func(_ context.Context, n int) (int, error) { return n, nil }, Untrusted("feed"))
 	refine := b.Step("refine", func(_ context.Context, n int) (int, error) { return n + 1, nil })
@@ -502,7 +488,6 @@ func TestFlowTaint_ReplayOfARecordedNodeRunsNoPreExecuteOfTheInstance(t *testing
 // A run that started with no taint declarations is resumed by a flow that now has a policy requiring provenance
 // without being asked where its input came from: the requirement is for a new run only.
 func TestFlowTaint_RequireProvenanceIsForNewRunsOnly(t *testing.T) {
-	allowTaint(t)
 	ctx := context.Background()
 	j := agenttest.MemJournal()
 	own := agent.SingleApproval()
