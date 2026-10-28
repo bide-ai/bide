@@ -352,9 +352,11 @@ func TestPageHasNoMarkupSinks(t *testing.T) {
 }
 
 // The page files are a budget the project chose (docs/design/visual-editor.md: 150 KB for all of
-// them, the viewer's shared styles included), so growth is a visible decision.
+// them, the viewer's shared styles included), so growth is a visible decision. The taint view (flow-taint.md,
+// part B) raised it to 160 KiB: its words, labels, skip link and forced-colors rules are the accessibility
+// of the feature, so none was trimmed to fit.
 func TestPageSizeBudget(t *testing.T) {
-	const budget = 150 << 10
+	const budget = 160 << 10
 	total := 0
 	for _, name := range ownAssets {
 		b, err := fs.ReadFile(pageFS, "page/"+name)

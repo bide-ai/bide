@@ -872,7 +872,7 @@ the consequences of an injected request. It does not detect or prevent the injec
   runs; "no declared source before it" is never a statement that a node reads no untrusted data), and without
   `-blocks` prints one line, "taint: not known without -blocks". A description carries the declarations of each block
   (version 2) but the flow's policy only if the host sets it (`plan.DescribeTaintPolicy`), so a node is `reads
-  untrusted` with "taint policy not given" until then. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+  untrusted` with "taint policy not given" until then. `bide edit` shows the same view ([flow editor](guides/flow-editor.md#taint-what-a-declared-source-can-do-to-a-node)); an embedded editor needs `flowedit.WithTaintPolicy` to know the policy. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
 - **`SeparateApprovers` works on approver IDs.** Two IDs of one person are not told apart, and in a certificate-bound
   gate the decider is the approver name, not the certificate's subject. A call whose own gate is a cap rule's is not
   separated (the cap gate is chosen per call, and the registration check cannot see it). The displays read the call's

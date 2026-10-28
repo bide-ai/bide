@@ -213,6 +213,7 @@ export function renderOutline(v) {
     const b = h('button', { type: 'button', 'data-node': n.name, 'aria-current': n.name === selected ? 'true' : 'false', tabindex: i === stop ? '0' : '-1' },
       h('span', { class: 'nm' }, shown(n.name)),
       h('span', { class: 'meta' }, [n.kind, n.block, n.risk, n.gate ? 'gate ' + n.gate : ''].filter(Boolean).join(' · ')),
+      n.taint ? h('span', { class: 'taintw' }, 'Taint: ' + n.taint.text) : null,
       (n.problems || []).map((p) => h('span', { class: 'prob' }, p)));
     b.addEventListener('click', () => select(n.name));
     return h('li', {}, b);
@@ -331,6 +332,7 @@ function skipTo(target) {
     blocks: () => first('#palette button[tabindex="0"]') || $('h-blocks'),
     run: () => $('h-run'),
     affected: () => $('h-affected'),
+    taint: () => $('h-taint'),
   }[target];
   const to = el && el();
   if (to) to.focus();
@@ -370,6 +372,64 @@ function field(id, label, control, help) {
   return h('div', { class: 'field' }, h('label', { for: id }, label), control, help ? h('p', { class: 'muted small', id: id + '-help' }, help) : null);
 }
 
+// ---- taint: what a declared source can do to a node (the same words bide check prints) ----
+//
+// The server computes every verdict; the page writes down what it is given. A node with no verdict says nothing
+// about the node. The note under the verdict is what the view cannot know.
+const TAINT_CANNOT = 'This is a may-view of the flow\'s order: every arm of a switch counts as live. It does not see a source that is not declared, a run whose input is declared untrusted, or the taint of an agent or nested flow a block runs.';
+function taintSection(n, v) {
+  const t = n.taint;
+  const s = v.taint;
+  if (!s) return null;
+  if (!t) {
+    return h('div', { class: 'taintsec', id: 'taint-section' }, h('h4', {}, 'Taint'),
+      h('p', { class: 'small' }, s.known ? 'No source this view knows of can run before this node, and it declares none.' : s.line),
+      s.known ? h('p', { class: 'muted small' }, TAINT_CANNOT) : null);
+  }
+  return h('div', { class: 'taintsec', id: 'taint-section' }, h('h4', {}, 'Taint'),
+    h('dl', {},
+      h('dt', {}, 'verdict'), h('dd', { id: 'taint-verdict' }, t.verdict),
+      (t.sources || []).length ? [h('dt', {}, 'reads'), h('dd', {}, t.sources.join(', '))] : [],
+      (t.path || []).length > 1 ? [h('dt', {}, 'path'), h('dd', { id: 'taint-path' }, t.path.join(' > '))] : ((t.sources || []).length ? [h('dt', {}, 'path'), h('dd', {}, 'earlier in the flow\'s order (no edge from a source)')] : []),
+      (t.declares || []).length ? [h('dt', {}, 'declares source'), h('dd', {}, t.declares.join(', '))] : [],
+      t.exempt ? [h('dt', {}, 'exempt'), h('dd', {}, t.exempt)] : [],
+      t.reason ? [h('dt', {}, 'cannot know'), h('dd', {}, t.reason)] : []),
+    h('p', { class: 'muted small' }, TAINT_CANNOT));
+}
+
+// The summary panel: the headline, then the nodes to look at, each a button that selects the node.
+export function renderTaint(v) {
+  const s = v.taint;
+  const sec = $('taint-panel');
+  if (!s) { sec.hidden = true; $('skip-taint').hidden = true; replace('taint-body'); return; }
+  sec.hidden = false;
+  $('skip-taint').hidden = false;
+  const list = (title, names, id) => names && names.length ? h('div', {}, h('h3', {}, title),
+    h('ul', { class: 'outlist', id }, names.map((nm) => {
+      const b = h('button', { type: 'button', 'data-taint-node': nm }, h('span', { class: 'nm' }, shown(nm)));
+      b.addEventListener('click', () => select(nm));
+      const li = h('li', {}, b);
+      return li;
+    }))) : null;
+  replace('taint-body',
+    h('p', { id: 'taint-line' }, s.line),
+    s.basis ? h('p', { class: 'muted small' }, 'Checked ' + s.basis + '.') : null,
+    (s.counts || []).length ? h('ul', { class: 'taintcounts', id: 'taint-counts' }, s.counts.map((c) => h('li', {}, c.n + ' ' + c.verdict))) : null,
+    list('Nodes that can have a side effect and may read untrusted data', s.exposed, 'taint-exposed'),
+    list('Of these, the taint policy is not given, so whether they escalate is not known', s.unknown, 'taint-unknown'),
+    list('Nodes that declare a source', s.sources, 'taint-sources'),
+    s.caveat ? h('p', { class: 'muted small', id: 'taint-caveat' }, s.caveat) : null);
+}
+
+// A change in what the page says about taint is spoken once, not on every keystroke that leaves it as it was.
+let lastTaint = null;
+function announceTaint(v) {
+  const s = v.taint;
+  const key = s ? JSON.stringify([s.known, s.line, s.exposed, s.unknown, (v.nodes || []).map((n) => n.taint && n.taint.verdict)]) : '';
+  if (lastTaint !== null && key !== lastTaint && s) announce('Taint changed: ' + s.line.replace(/^taint: /, ''));
+  lastTaint = key;
+}
+
 export function renderInspector(v) {
   const n = (v.nodes || []).find((x) => x.name === selected);
   if (!n) {
@@ -390,6 +450,7 @@ export function renderInspector(v) {
     h('h3', {}, shown(n.name)),
     shown(n.name) !== n.name ? h('p', { class: 'warn small', id: 'f-name-escaped' }, 'This name has characters that do not print, written out here as \\u{code}. Rename it.') : null,
     h('dl', {}, row('kind', n.kind), row('takes', n.in), row('gives', n.out), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
+    taintSection(n, v),
     v.typed && !n.out ? h('p', { class: 'muted small', id: 'types-unknown' }, 'Types unknown: the program does not describe this node\'s block, so nothing here is checked against it.') : null,
     h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
     h('div', { class: 'form' },
@@ -1366,12 +1427,14 @@ export function render(v, { keepSource = false } = {}) {
   renderOutline(v);
   renderInspector(v);
   renderTyped(v);
+  renderTaint(v);
   renderAssertions(v);
   renderProblems(v);
   renderState();
   // The weakened banner announces itself (it is an alert); the verdict is spoken here, once per change.
   const verdict = v.verdict.word + '. ' + v.verdict.line;
   if (verdict !== lastVerdict) { lastVerdict = verdict; announce(verdict); }
+  announceTaint(v);
   applyRunPath();
   refreshRun();
   updateAffStale();

@@ -552,6 +552,38 @@ it is compared with, and the page says when the list was made for text it no lon
 its first run in the editor, `bide edit -run '<id>' <store flags> <file>`, quoted for a POSIX shell, and none for an ID that holds a
 control or direction-changing character. The list is of the store you gave: runs in other stores are not seen.
 
+## Taint: what a declared source can do to a node
+
+The page shows the static taint view of the flow, the analysis `bide check` prints (see [Taint in a
+check](plan-flows.md#taint-in-a-check)): which declared sources of untrusted content may run before each node,
+and what the flow's taint policy would do to a node that can have a side effect. It is computed in Go from the
+text on the page; the page only draws it.
+
+- **Under each node** are words ("reads untrusted: inbound-email", "escalates: reads inbound-email", "refused",
+  "exempt", "source: inbound-email") and a ring inside its box whose pattern tells the states apart without color
+  (dotted, solid, dash-dot, long dashes, thin). The same words are in the node's accessible name and in its
+  button in the outline.
+- **The inspector** has a Taint section for the selected node: the verdict, the sources it may read, the path from
+  a source ("fetch > triage > refund", or "earlier in the flow's order" when no edge leads from the source),
+  the sources it declares, its exemption, what the view cannot know, and a note that this is a may-view.
+- **The Taint panel** lists the side-effecting nodes that may read untrusted data and the ones whose escalation is
+  not known because the policy is not given, each a button that selects the node; a skip link reaches it. A change
+  in what the page says is announced ("Taint changed: ...").
+- **The banner** `UNTRUSTED EXPOSURE WIDENED` appears, with the weakened banners, when an edit makes a node that can
+  have a side effect newly read untrusted data while the policy is known to be absent, or removes a source; when
+  the policy gates or refuses the node, or it is exempt, the change is only listed in the baseline line's changes.
+  When the taint cannot be compared the save is NOT CERTIFIED, as for any comparison that cannot be made.
+
+It is exact only where the program's declarations are known: a structural editor says "taint: not known without
+-blocks" once and gives no verdict on any node (it shows only a source the config itself states with `untrusted:`),
+and a description from before version 2 says it carries no taint declarations. The embedded editor knows a Registry
+but a Registry holds no flow policy, so give it with `flowedit.WithTaintPolicy(policy)` (the zero
+`agent.TaintPolicy` states that there is none); without it a node that reads untrusted data is "reads untrusted"
+with the reason "taint policy not given", never "escalates". `bide edit -blocks` uses the description's
+`taint_policy`. No state is ever worded as safe: "no declared source before it" means only that, and the view cannot
+see an undeclared source, a run whose input is declared untrusted, or the taint of an agent or nested flow a block
+runs. A source that can itself have a side effect runs ungated for its own read; split the block.
+
 ## Typed mode: the program's blocks
 
 Alone, the editor knows block names only from the config, so it checks structure: it cannot check types,
@@ -627,7 +659,7 @@ The command is a thin wrapper over package `github.com/bide-ai/bide/flowedit`: `
 returns a `*Server` whose `Handler()` is an `http.Handler` that does not depend on a listener or on
 the address, so another host can serve the same page. `flowedit.BuildView` is the page's data for
 a text: the same answers `bide check` gives, as a value. `flowedit.Compare` is the weakening verdict
-for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`. `flowedit.WithRegistry` and `flowedit.WithBlocks` make the editor typed (see [Typed mode](#typed-mode-the-programs-blocks)); a host can change the file, the base, the Registry or description, and nothing about who may use the editor: the loopback, `Host`, `Origin` and token checks, the content security policy and the one writable path are the handler's, whatever it is mounted on.
+for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`. `flowedit.WithRegistry` and `flowedit.WithBlocks` make the editor typed (see [Typed mode](#typed-mode-the-programs-blocks)), and `flowedit.WithTaintPolicy` gives it the flow's taint policy (see [Taint](#taint-what-a-declared-source-can-do-to-a-node)); a host can change the file, the base, the Registry or description, and nothing about who may use the editor: the loopback, `Host`, `Origin` and token checks, the content security policy and the one writable path are the handler's, whatever it is mounted on.
 `flowedit.ApplyOperation` applies one editor operation (set a node's safety or block, set or clear
 its approval gate: `need`, approvers, `exclude_principal`, `timeout`; add, replace or remove an
 assertion from one of the six forms, `flowedit.Assertion`) to a config's text by splicing,

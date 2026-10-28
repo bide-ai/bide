@@ -111,3 +111,18 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
   .node .box { stroke-dasharray: 2 5; stroke-linecap: round; }
   .node.done .box, .node.attempted .box, .node.waiting .box, .node.halted .box { stroke-linecap: butt; }
 }
+
+/* taint (a config's static view): a ring inside the box whose pattern, not its color, tells the states apart,
+   and words under the box. Dotted: reads untrusted; solid: escalates; dash-dot: refused; long dashes: exempt;
+   thin solid: a node that only declares a source. */
+.tring { fill: none; stroke-width: 2.4; pointer-events: none; stroke: var(--fg); }
+.tring.tr-reads { stroke-dasharray: 2 4; }
+.tring.tr-escalates { stroke-dasharray: none; }
+.tring.tr-refused { stroke-dasharray: 10 3 2 3; }
+.tring.tr-exempt { stroke-dasharray: 14 5; }
+.tring.tr-source { stroke-dasharray: none; stroke-width: 1; }
+.ntaint { text-anchor: middle; font-size: 12px; font-weight: 650; fill: var(--fg); }
+@media (forced-colors: active) {
+  .tring { stroke: CanvasText; }
+  .ntaint { fill: CanvasText; }
+}

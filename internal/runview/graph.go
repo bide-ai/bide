@@ -46,6 +46,7 @@ type Graph struct {
 	Height  int         `json:"-"`
 	nw, nh  int         // node size: taller when a node carries a gate or a crash line
 	gy      int         // the gap between rows: smaller in a gated graph, so its taller nodes fit a screen
+	below   int         // the height of the taint lines under a node, added to the gap between rows
 	// ranks is the number of rows, and backs how far right the loop-back arcs reach.
 	ranks int
 }
@@ -75,8 +76,13 @@ type GraphNode struct {
 	Risk  string `json:"risk,omitempty"`
 	Crash string `json:"crash,omitempty"`
 	Cex   bool   `json:"cex,omitempty"`
-	x, y  int
-	rank  int
+	// Taint are the lines under a config node's box that say what a declared source can do to it (see
+	// TaintTag), and TaintClass the ring drawn inside the box: the pattern of the ring tells the states apart
+	// without color. Empty when the node has none, and on a run's graph.
+	Taint      []string `json:"taint,omitempty"`
+	TaintClass string   `json:"taint_class,omitempty"`
+	x, y       int
+	rank       int
 }
 
 // GraphEdge is one declared edge or Switch arm, and whether the run took it.

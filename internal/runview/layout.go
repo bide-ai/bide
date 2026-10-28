@@ -57,6 +57,11 @@ func layout(g *Graph, entry string) {
 		extra = max(extra, extraLines(n))
 	}
 	g.nw, g.nh, g.gy = nodeW, 56+18*extra, gapY-6*extra
+	// The taint lines go under a node's box, so the rows are set apart by as many lines as the most any node has.
+	for _, n := range g.Nodes {
+		g.below = max(g.below, 15*len(n.Taint))
+	}
+	g.gy += g.below
 	place(g, entry)
 	g.SVG = svg(g)
 }
@@ -148,7 +153,7 @@ func place(g *Graph, entry string) {
 		}
 		width = max(width, int(ln[v].cx)+ln[v].w/2)
 	}
-	g.Height = pad*2 + g.ranks*nh + (g.ranks-1)*gy + 16 // 16: the last row's notes
+	g.Height = pad*2 + g.ranks*nh + (g.ranks-1)*gy + 16 + g.below // 16: the last row's notes, and its taint lines
 
 	route(g, idx, ln, chains, rowY)
 	g.Width = width + pad + badgeW/2

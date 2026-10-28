@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/editrun"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/safefile"
@@ -100,6 +101,8 @@ type options struct {
 	blocks   *plan.RegistryDescription
 	themes   runview.ThemeSet
 	run      *editrun.Run
+	// taintPolicy is the flow's taint policy when the host gives it (WithTaintPolicy).
+	taintPolicy *agent.TaintPolicy
 }
 
 // WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
