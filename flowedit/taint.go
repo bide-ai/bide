@@ -13,8 +13,8 @@ import (
 // from plan.ConfigReport.Taint, the analysis `bide check` prints; the page only draws it, and every state
 // has words: none is carried by a color or a shape alone, and none says a node is safe.
 
-// WithTaintPolicy gives a typed editor (WithRegistry) the taint policy of the flow its program runs, which a
-// Registry does not hold (it is Builder.WithTaintPolicy). Without it the editor does not know the policy and
+// WithTaintPolicy gives a typed editor (WithRegistry or WithBlocks) the taint policy of the flow its program runs,
+// which a Registry does not hold (it is Builder.WithTaintPolicy), and which overrides a description's own. Without it the editor does not know the policy and
 // says so: a node that reads untrusted data is "reads untrusted" and never "escalates". The zero
 // agent.TaintPolicy states that the flow has none. It has no effect on a structural editor, and a
 // description given by WithBlocks brings its own policy (RegistryDescription.TaintPolicy), which this option

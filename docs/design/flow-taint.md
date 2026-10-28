@@ -1,8 +1,8 @@
 # Design: taint in plan flows, and its view in the flow editor
 
 Status: Part A is built (the run-time rule, the declarations in `run:start`, Conform, nested flows, the sink for
-taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B is built for `bide check` and `bide check -diff` (the static view,
-`ConfigReport.Taint`); the editor half is in progress. This text was written before the
+taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B is built: the static view (`ConfigReport.Taint`) in `bide check`,
+`bide check -diff` and the flow editor. This text was written before the
 code and keeps its original wording where the code follows it; "today" in section 0 means `main` at the commit
 named below. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
