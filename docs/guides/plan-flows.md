@@ -891,7 +891,7 @@ is stated in the verdict and never as a clean result: a source a block reads wit
 input is declared untrusted, and the taint of an agent or nested flow a block runs.
 
 `bide check` prints the section (`taint: 2 nodes may read untrusted data (1 escalates)` and a line per node), or
-one line, `taint: not known without -blocks`, and `bide check -diff` compares it: a node that can have a side effect
+one line, `taint: not known without -blocks` (`taint: not known (reason)` when the blocks are given but declare no taint), and `bide check -diff` compares it: a node that can have a side effect
 and newly reads a source is listed when it is covered, that is the policy gates or refuses it, or it is exempt
 ("now reads inbound-email, escalates", "exempt (fixed amount)"); it is weakened (`UNTRUSTED EXPOSURE WIDENED`) when
 the policy is known to be absent, and the same for a node that read a source covered and is no longer covered.

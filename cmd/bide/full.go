@@ -167,7 +167,8 @@ It then prints a taint line, so output is no longer empty for a clean config; th
 -blocks (or a Registry) the line is a taint section: the nodes that may read a declared source of untrusted
 content, and what the flow's policy would do to them (escalates, refused, exempt, or "reads untrusted" when the
 policy is not given in the description: its "taint_policy"). Without them it is "taint: not known without
--blocks". It is a may-view of the flow's order and cannot see an undeclared source, a run whose input is declared
+-blocks" (or "taint: not known (reason)" when the blocks are given but declare no taint, as a
+version 1 description does). It is a may-view of the flow's order and cannot see an undeclared source, a run whose input is declared
 untrusted, or the taint of an agent or nested flow a block runs.
 
 With -blocks it also checks them, by name, against a description of the program's registered
@@ -209,7 +210,8 @@ the policy is known to be absent, or a node that no longer declares a source ("e
 EXPOSURE WIDENED). A node that newly reads untrusted data under a policy that gates or refuses it, or when it is
 exempt, is listed as a change. When the taint of the two versions cannot be compared (the policy is not given, or
 only one side has -blocks or -old-blocks and it states a source) the diff is labelled not certified and
--fail-on-weaken fails on it; when neither side has -blocks it prints "taint not compared (no -blocks)" and
+-fail-on-weaken fails on it; when neither side has -blocks it prints "taint not compared (no -blocks)" (or
+"(no -blocks on one side)", or a note that a version 1 description carries no taint declarations) and
 certification is unchanged. Flags may follow the file names.
 
 On a terminal the output is colored (a red cross on each error and its counterexample path in red,

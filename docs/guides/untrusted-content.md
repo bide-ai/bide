@@ -68,8 +68,7 @@ Marks are recorded whether or not the agent has a taint policy, so the journal s
 run read before a policy exists. A run that states nothing records nothing: its records are byte for byte as
 before, and older binaries ignore the new members.
 
-Not covered: a result `ResolveHalt` injects (it has no access to the registered tools), a plan flow node (a tool
-that declares `Untrusted` or `TaintExempt` is refused as a node), and any text a tool or system prompt injects
+Not covered: a result `ResolveHalt` injects (it has no access to the registered tools; for a plan flow node see [Plan flows](#plan-flows)), and any text a tool or system prompt injects
 that the host did not declare.
 
 ## The taint policy
@@ -313,7 +312,7 @@ This bounds what an injected request can do. It does not detect or prevent one.
 7. Text the host injects outside the journal (a system prompt, a model middleware) is invisible to the marks.
 8. An input is trusted unless the entry point passes `WithUntrustedInput`.
 9. Amount caps, a separate control, bound magnitude and are not part of this policy.
-10. The policy covers agent runs only; see [plan flows](plan-flows.md).
+10. Plan flows have a rule of their own with the same policy type; see [Plan flows](#plan-flows).
 
 The approval volume of a deployment whose agents read outside text and write will rise. That is the intended
 effect; `TaintExempt` is the relief valve, and it is a code change visible in the declarations digest.

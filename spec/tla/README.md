@@ -1027,7 +1027,7 @@ decision here is their first valid one; model 1b checks the counting rule over s
 invalid records, and that a counted signature binds the request's input is checked by Go tests
 (`plan/gate_test.go`), not by this model.
 
-Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; the enforcement, nested flows and the sink for taint coming up are built, and `SeparateApprovers` is not). The same
+Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; the enforcement, nested flows, the sink for taint coming up and `SeparateApprovers` are built). The same
 module models it: a run records its declarations in `run:start` (the policy, the exempt nodes, the
 declared sources: `rdecl`, first writer wins) and each drive, which may be run under other
 declarations (`DeclNames`: no policy, Gate, Refuse, dropped sources, an added exemption), compares
@@ -1108,7 +1108,7 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
 | `TRefuse` | `flowTaintNode` (through `journalhook.FlowTaintNodeHook`, called by `runGate` before any gate): the refusal, after it writes the gate-reason record (insert-once, `refused`): no node record, attempt marker or approval request; `runGate` returns it as `plan.ErrTaintRefused` |
 | `TGate` | `runGate`: the second gate instance `node:[iter:<n>:]<name>:taint` (`escalation.NodeInstance`), evaluated by `evalGate` through `journalhook.Gate` after the node's own gate and before the attempt claim: its request |
-| `TCount` | `flowGate`'s count for the instance subject (the same code as `GCount`, over the instance's own decisions after its request): a terminal tally, or a pause; the exclusion of the approvers the own gate counted under `SeparateApprovers`, and the denial when too few are left, are 3d |
+| `TCount` | `flowGate`'s count for the instance subject (the same code as `GCount`, over the instance's own decisions after its request): a terminal tally, or a pause; the exclusion of the approvers the own gate counted under `SeparateApprovers`, and the denial when too few are left, are modelled with `Separate` (`ncnt`); the Go side is `siblingCounted` (agent/approval.go) |
 | `TPause` | `runGate`/`evalGate`: a denying instance tally stops the run (`plan.ErrApprovalDenied`); a passing one goes to the PreExecs |
 | `TPre` | `runGate`'s `preExec` (`journalhook.PreExec`) of the node gate and then of the instance, immediately before the node's Step: a certificate revoked after approval stops the node before the claim; a node whose result is recorded replays and runs no check |
 | `GRetally` | `supersededForSoD` (agent/toolexec.go, used by `tallyGateOnce` and `countGate`): the one way a recorded pass of a gate is counted again, under `ExcludePrincipal` (a passed tally recorded before the policy excluded the requester). The escalation instance of a call or node reads the own gate's terminal tally and writes none of its records (`siblingCounted`, `TestTallyGate_AnInstanceNeverWritesTheOwnGatesRecords`), so it never causes a re-tally; the model has no principal, so there the re-tally has no cause but the instance, and the legitimate supersede is not modelled |
