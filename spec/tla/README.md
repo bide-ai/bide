@@ -1079,6 +1079,7 @@ Not modelled, and who owns the Go test (none of these exists yet; the pull reque
 
 | Item | Property | Go test its owner pull request must contain |
 |---|---|---|
+| `SeparateReverse` (A5b), the Go side | a recorded pass of the own gate is never superseded because of the instance | 3d: with `SeparateApprovers` and `ExcludePrincipal` on the own gate, an approver who decided on the instance does not change the own gate's re-tally |
 | Build's disjoint approver sets (A2 layer 1) | for every tool or node that can be escalated and has an own gate, the approver ID sets of the effective own gate and of the policy Gate are disjoint, else ErrConfig | 3d: Build refuses a tool or node whose own gate and policy Gate share approver IDs, over `effectiveGates`, naming the tool or node and the shared IDs |
 | `CountsUnsigned` (A5b) | with `SeparateApprovers` set, a `SingleApproval` own gate or policy Gate is ErrConfig | 3d: a single-approval own gate with `SeparateApprovers` set is ErrConfig at registration or Build, naming the tool or node |
 | `VerifierIgnoresExclusion` (A5b) | `VerifyApprovals` recounts the instance with the same exclusion | 3d: `VerifyApprovals` recounts with `excluded_by_sibling`; the recount differs without it (the mutant test) |
