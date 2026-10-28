@@ -441,3 +441,67 @@ func TestFlowTaintEnter_AnUnreadableSourcesMemberIsAStorageFault(t *testing.T) {
 		t.Errorf("an unreadable member: %v, want ErrStorage", err)
 	}
 }
+
+// A run that began (it has a start) outside taint, declaring no source, has nothing to send, whatever its journal holds.
+func TestFlowTaintSink_ABegunRunNotUnderTaintAndDeclaringNothingSendsNothing(t *testing.T) {
+	ctx := context.Background()
+	parent, plain := memJournal(), memJournal()
+	if _, _, _, err := beginRun(ctx, plain, "c2", flowStart()); err != nil {
+		t.Fatal(err)
+	}
+	recordNode(t, plain, "c2", "node:a")
+	if _, err := putTaintMark(ctx, plain, "c2", "node:a", "planted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flowTaintSink(withMarkSink(ctx, parent, "p2", "node:call"), plain, "c2", "node:a"); err != nil || len(marksFor(t, parent, "p2", "node:call")) != 0 {
+		t.Errorf("a begun run not under taint: %v, %v", err, marksFor(t, parent, "p2", "node:call"))
+	}
+}
+
+// A child that began outside taint but declares sources is counted by the fold, as the sink sends it.
+func TestFoldChildMarks_CountsAChildThatDeclaresSourcesOutsideTaint(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	startTainted(t, j, "p1", flowTaintDecls{Policy: flowTaintPolicy{Refuse: true}})
+	got, _ := flowTaintPrepare(ctx, j, "c1", flowStart(), nil, nil, map[string][]string{"a": {"feed"}})
+	if _, _, _, err := beginRun(ctx, j, "c1", got.(RunStart)); err != nil {
+		t.Fatal(err)
+	}
+	recordNode(t, j, "c1", "node:a")
+	if err := putTaintChild(ctx, j, "p1", "node:call", "c1", childKindFlow); err != nil {
+		t.Fatal(err)
+	}
+	if err := foldChildMarks(ctx, j, "p1", "node:call"); err != nil {
+		t.Fatal(err)
+	}
+	if got := marksFor(t, j, "p1", "node:call"); strings.Join(got, ",") != "feed" {
+		t.Errorf("folded %v, want [feed]", got)
+	}
+}
+
+func TestFlowEndedTainted_ARunThatInheritedMarksIsTainted(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	got, err := flowTaintPrepare(taintedCtx(taintMark{Source: "inbox", Ref: "node:x"}), j, "c1", flowStart(), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := beginRun(ctx, j, "c1", got.(RunStart)); err != nil {
+		t.Fatal(err)
+	}
+	if tainted, err := flowEndedTainted(ctx, j, "c1"); err != nil || !tainted {
+		t.Errorf("a run that inherited a mark and read nothing: %v, %v; want it tainted", tainted, err)
+	}
+}
+
+// A declared-sources member that does not read in a start Conform is given is a divergence.
+func TestFlowTaintConform_AnUnreadableSourcesMemberIsADivergence(t *testing.T) {
+	start := flowStart()
+	start.Ext = map[string]json.RawMessage{extTaintSources: json.RawMessage(`{"a":["z","b"]}`)}
+	b, _ := json.Marshal(start)
+	recs := []Record{{Name: runStartStep, Kind: StepValue, Result: b}}
+	diffs := flowTaintConform(recs, nil, nil, map[string]any{})
+	if !strings.Contains(strings.Join(diffs, "|"), "declared sources do not read") {
+		t.Errorf("diffs %q, want the unreadable sources named", diffs)
+	}
+}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -591,6 +593,7 @@ func TestFlowTaintSink_ConformChecksTheLinkRecords(t *testing.T) {
 	for what, f := range map[string]struct{ name, body, want string }{
 		"a link that does not read":    {"taint-child:node%3Acall:c9", `1`, "taint-child record that does not read"},
 		"a link of an undeclared node": {"taint-child:node%3Aghost:c9", `{"format":"bide.taint-child.v1","node_key":"node:ghost","run_id":"c9","kind":"flow"}`, "taint-child record of an undeclared node"},
+		"a mark that does not read":    {"taint-mark:node%3Acall:s", `1`, "taint-mark record that does not read"},
 		"a mark of an undeclared node": {"taint-mark:node%3Aghost:s", `{"format":"bide.taint-mark.v1","node_key":"node:ghost","source":"s"}`, "taint-mark record of an undeclared node"},
 	} {
 		ok, diffs, err := p.Conform(ctx, plant(t, j, "p1", f.name, f.body), "p1")
@@ -970,4 +973,41 @@ func TestFlowTaintSink_ARunThatBeganOutsideTaintStillSendsItsDeclaredSources(t *
 			t.Errorf("no declaration: %v, marks %v, pay ran %d times; want pay ungated and no marks", err, got, pp.pays)
 		}
 	}
+}
+
+// A journal that cannot be read for the agent a node's body ran fails the node (before it is recorded): its marks are
+// not taken for none.
+func TestFlowTaintSink_AnAgentWhoseJournalCannotBeReadFailsTheNode(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	fs := &loadFailStore{Store: agent.NewMemStore()}
+	aj := agenttest.MustJournal(fs)
+	reads := 0
+	run := agentRunner(t, aj, "a1", "web", &reads)
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), false, func(ctx context.Context) error {
+		err := run(ctx)
+		fs.fail.Store(true)
+		return err
+	})
+	_, err := p.Run(ctx, j, "p1", 1)
+	if err == nil || !strings.Contains(err.Error(), "hand the marks") {
+		t.Fatalf("Run = %v, want the node to fail naming the marks it could not hand up", err)
+	}
+	if recs, _ := j.History(ctx, "p1"); hasName(recs, "node:call") {
+		t.Error("the node was recorded although its agent's marks could not be read")
+	}
+}
+
+// loadFailStore fails Load once armed.
+type loadFailStore struct {
+	agent.Store
+	fail atomic.Bool
+}
+
+func (s *loadFailStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error] {
+	if s.fail.Load() {
+		return func(yield func(agent.Entry, error) bool) { yield(agent.Entry{}, errors.New("unreadable")) }
+	}
+	return s.Store.Load(ctx, runID, after)
 }
