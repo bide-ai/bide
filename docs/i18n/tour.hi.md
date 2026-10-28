@@ -108,7 +108,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 ## त्वरित शुरुआत
 
-Go 1.27 की आवश्यकता है (कोर जेनेरिक मेथड इस्तेमाल करता है)। यदि `go version` पुराना है, तो अपग्रेड करें या `GOTOOLCHAIN=go1.27.0` सेट करें।
+Go 1.27 की आवश्यकता है (कोर जेनेरिक मेथड इस्तेमाल करता है)। यदि `go version` पुराना है, तो अपग्रेड करें या `GOTOOLCHAIN=go1.27.2` सेट करें।
 
 कोर पैकेज `agent` है, जो `github.com/bide-ai/bide/agent` से import होता है (जैसा नीचे का ब्लॉक दिखाता है)। अपने मॉड्यूल में इसे और SQLite स्टोर को `go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` से इंस्टॉल करें (या कोड लिखकर `go mod tidy` चलाएँ)। API key नहीं है? [शुरुआती गाइड](../getting-started.md#no-api-key-use-agenttest) वही agent एक scripted model के साथ offline चलाती है।
 

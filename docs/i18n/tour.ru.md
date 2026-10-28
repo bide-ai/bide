@@ -108,7 +108,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 
 ## Быстрый старт
 
-Требуется Go 1.27 (ядро использует обобщённые методы). Если `go version` старше, обновитесь или задайте `GOTOOLCHAIN=go1.27.0`.
+Требуется Go 1.27 (ядро использует обобщённые методы). Если `go version` старше, обновитесь или задайте `GOTOOLCHAIN=go1.27.2`.
 
 Ядровой пакет – `agent`, импортируется из `github.com/bide-ai/bide/agent` (как показывает блок ниже). В своём модуле установите его и хранилище SQLite командой `go get github.com/bide-ai/bide/agent@latest github.com/bide-ai/bide/store/sqlite@latest` (или напишите код и выполните `go mod tidy`). Нет API-ключа? [Руководство по началу работы](../getting-started.md#no-api-key-use-agenttest) запускает того же агента офлайн со скриптовой моделью.
 

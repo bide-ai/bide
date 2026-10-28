@@ -135,7 +135,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 ## البداية السريعة
 
 تتطلّب Go 1.27 (النواة تستخدم توابع مُعمَّمة). إن كان `go version` أقدم، فرقِّ أو اضبط
-`GOTOOLCHAIN=go1.27.0`.
+`GOTOOLCHAIN=go1.27.2`.
 
 حزمة النواة هي `agent`، تُستورَد من `github.com/bide-ai/bide/agent`
 (كما تُظهِر الكتلة أدناه). في وحدة خاصة بك، ثبّتها مع مخزن SQLite بالأمر

@@ -4,7 +4,7 @@ Bide is a Go framework for AI agents that move money: risky calls approved, ever
 
 ## Prerequisites
 
-- Go 1.27 or newer (the core uses generic methods). If `go version` is older, upgrade or set `GOTOOLCHAIN=go1.27.0`. With the default `GOTOOLCHAIN=auto`, go fetches 1.27 by itself inside a project whose `go.mod` asks for it (`bide init` writes one), and `bide doctor` reports an older Go as a warning; with `GOTOOLCHAIN=local` or a pinned older toolchain it is a failure.
+- Go 1.27 or newer (the core uses generic methods). If `go version` is older, upgrade or set `GOTOOLCHAIN=go1.27.2`. With the default `GOTOOLCHAIN=auto`, go fetches 1.27 by itself inside a project whose `go.mod` asks for it (`bide init` writes one), and `bide doctor` reports an older Go as a warning; with `GOTOOLCHAIN=local` or a pinned older toolchain it is a failure.
 - For examples that call a live model, an API key (any OpenAI-compatible endpoint works via `WithBaseURL`). Several examples run with no key at all (see below).
 
 ## See it in 20 seconds

@@ -145,7 +145,7 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 ## Quickstart
 
 Requires Go 1.27 (the core uses generic methods). If `go version` is older, upgrade or set
-`GOTOOLCHAIN=go1.27.0`.
+`GOTOOLCHAIN=go1.27.2`.
 
 The core package is `agent`, imported from `github.com/bide-ai/bide/agent`
 (as the block below shows). In a module of your own, install it and the SQLite store with
