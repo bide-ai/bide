@@ -291,11 +291,17 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 	return gateCount{tally: tally, checks: checks, name: name, gen: gen}, nil
 }
 
+// protocol:flows begin GRetally
+
 // supersededForSoD reports whether pol, a policy that excludes the requester, supersedes the
-// recorded tally t: t passed without excluding it.
+// recorded tally t: t passed without excluding it. It is the one way a recorded pass of a gate is counted again,
+// and its cause is the requester the policy came to exclude: never the escalation instance of the call, which
+// reads the own gate's tally and writes none of its records (TaintPolicy.SeparateApprovers).
 func supersededForSoD(t ApprovalTally, pol *ApprovalPolicy) bool {
 	return pol.ExcludePrincipal && t.Passed() && !t.ExcludePrincipal
 }
+
+// protocol:flows end
 
 // protocol:claims end
 
