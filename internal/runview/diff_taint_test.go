@@ -8,8 +8,8 @@ import (
 	"github.com/bide-ai/bide/plan"
 )
 
-// Reports built by hand: the diff reads plan.ConfigReport, and the engine's guard against declaring taint
-// before it is enforced keeps Inspect from making them in this package.
+// Reports built by hand, to put each rule of the diff in the state it reads (diff_taint_real_test.go makes the
+// same reports with a Registry).
 
 func taintReport(nodes map[string]plan.NodeTaint, safety map[string]plan.NodeSafety, order ...string) plan.ConfigReport {
 	r := plan.ConfigReport{Typed: true, Taint: nodes, Safety: safety, Gated: map[string]bool{}}

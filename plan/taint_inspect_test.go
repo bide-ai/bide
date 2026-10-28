@@ -55,7 +55,6 @@ func verdicts(r ConfigReport) map[string]string {
 
 func inspectTaint(t *testing.T, cfg string, blocks tn, opts ...InspectOption) ConfigReport {
 	t.Helper()
-	allowTaint(t)
 	preds := []string{"again", "big"}
 	r := InspectConfig([]byte(cfg), taintRegistryOf(t, blocks, preds...), append([]InspectOption{AllowUnusedBlocks()}, opts...)...)
 	if r.Errors() {
@@ -139,7 +138,6 @@ func TestTaintInspect_Join(t *testing.T) {
 	}
 	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"s","nodes":[{"name":"s","block":"s"},{"name":"x","block":"x"},{"name":"y","block":"y"},{"name":"after","block":"after"}],
 	"wiring":[{"edge":["s","x"]},{"edge":["s","y"]},{"join":"j","inputs":["x","y"],"merge":"m"},{"edge":["j","after"]}]}`
-	allowTaint(t)
 	r := InspectConfig([]byte(cfg), reg, AllowUnusedBlocks(), InspectTaintPolicy(gatePol))
 	if r.Errors() {
 		t.Fatalf("%+v", r.Problems)
@@ -209,7 +207,6 @@ func TestTaintInspect_StructuralJoinKeyAndErrors(t *testing.T) {
 		t.Errorf("%+v", s.Taint)
 	}
 	// A typed report with errors has no verdicts.
-	allowTaint(t)
 	r := InspectConfig([]byte(cfgOf("nope", []string{"a"})), taintRegistryOf(t, tn{"a": {}}), AllowUnusedBlocks())
 	if !r.Errors() || r.Taint != nil {
 		t.Errorf("errors %v, taint %v", r.Errors(), r.Taint)
@@ -220,7 +217,6 @@ func TestTaintInspect_Described(t *testing.T) {
 	cfg := cfgOf("src", []string{"src", "pay"}, wEdge("src", "pay"))
 	reg := taintRegistryOf(t, tn{"src": {Untrusted("web")}, "pay": {}})
 	d := reg.Describe()
-	allowTaint(t)
 	// A description without a policy: pay reads untrusted, whether it escalates is not known.
 	r := InspectConfigDescribed([]byte(cfg), d, AllowUnusedBlocks())
 	if got := r.Taint["pay"]; got.Verdict != taintVerdictReads || got.Reason != taintReasonNoPolicy {
