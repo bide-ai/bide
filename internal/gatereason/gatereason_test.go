@@ -241,3 +241,39 @@ func TestFind_ARefusedRecordIsRead(t *testing.T) {
 		t.Errorf("reasons of a refused record = %+v, want the taint reason", got)
 	}
 }
+
+func TestSeparated(t *testing.T) {
+	rec := func(call string, separate bool) []byte {
+		return []byte(`{"format":"bide.gate-reason.v1","tool_use_id":"` + call + `","reasons":[],"separate_approvers":` + map[bool]string{true: "true", false: "false"}[separate] + `}`)
+	}
+	of := func(recs map[string][]byte) Records {
+		return func(yield func(string, []byte) bool) {
+			for n, b := range recs {
+				if !yield(n, b) {
+					return
+				}
+			}
+		}
+	}
+	flagged := map[string][]byte{Prefix + "c1": rec("c1", true)}
+	if !Separated("c1#taint", of(flagged)) {
+		t.Error("an instance of a flagged call is not separated")
+	}
+	if Separated("c1", of(flagged)) {
+		t.Error("the call's own gate is separated from itself")
+	}
+	if Separated("c1#taint", of(map[string][]byte{Prefix + "c1": rec("c1", false)})) {
+		t.Error("an unflagged call is separated")
+	}
+	if Separated("c1#taint", of(nil)) {
+		t.Error("a call with no record is separated")
+	}
+	// A decoy that does not say so cannot be outvoted, and one that does cannot turn it on alone.
+	both := map[string][]byte{Prefix + "c1": rec("c1", true), Prefix + "other": rec("c1", false)}
+	if Separated("c1#taint", of(both)) {
+		t.Error("a decoy record that does not say so is outvoted")
+	}
+	if Separated("node:pay:taint", of(map[string][]byte{Prefix + "node%3Apay": rec("node:pay", true)})) != true {
+		t.Error("a flow node's instance is not separated")
+	}
+}

@@ -84,7 +84,7 @@ func readFlowDescription(raw []byte) (declarations.FlowDocument, error) {
 func flowDocument(d plan.RegistryDescription) declarations.FlowDocument {
 	doc := declarations.FlowDocument{TaintKnown: d.TaintDeclared}
 	if p := d.TaintPolicy; p != nil {
-		doc.Policy = &declarations.Policy{Gate: gateDoc(p.Gate), Refuse: p.Refuse, RequireProvenance: p.RequireProvenance}
+		doc.Policy = &declarations.Policy{Gate: gateDoc(p.Gate), Refuse: p.Refuse, RequireProvenance: p.RequireProvenance, SeparateApprovers: p.SeparateApprovers}
 	}
 	for _, b := range d.Blocks {
 		doc.Blocks = append(doc.Blocks, declarations.FlowBlock{

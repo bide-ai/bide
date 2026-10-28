@@ -174,6 +174,9 @@ type Gate struct {
 	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
 	Requesters       []string `json:"requesters,omitempty"`
 	Excluded         []string `json:"excluded,omitempty"`
+	// ExcludedBySibling: the escalation instance of a call whose taint policy separates approvers does not count
+	// the approvers the call's own gate counted; they are among Excluded too.
+	ExcludedBySibling []string `json:"excluded_by_sibling,omitempty"`
 	// ExpiresAt is the gate's recorded deadline (agent.ApprovalDeadline), in the journal's timestamp
 	// form, and Timeout the timeout it was opened with ("24h"); both empty for a gate with none.
 	ExpiresAt string `json:"expires_at,omitempty"`
@@ -705,6 +708,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				g.Need, g.Approvers = tally.Need, tally.Approvers
 				g.ApprovedBy, g.DeniedBy, g.Pending = tally.ApprovedBy, tally.DeniedBy, tally.Pending
 				g.ExcludePrincipal, g.Requesters, g.Excluded = tally.ExcludePrincipal, tally.Requesters, tally.Excluded
+				g.ExcludedBySibling = tally.ExcludedBySibling
 				if tally.Expired {
 					for i := range g.Decisions {
 						if g.Decisions[i].Signed && !slices.Contains(tally.Records, g.Decisions[i].name) {
@@ -729,6 +733,23 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				// The gate's rule for matching a requester to an approver id.
 				if slices.ContainsFunc(g.Requesters, func(r string) bool { return r != "" && agent.SameApprover(a, r) }) {
 					g.Excluded = append(g.Excluded, a)
+				}
+			}
+		}
+		if !g.Tallied && gatereason.Separated(id, agentrecs.Of(recs)) {
+			// The escalation instance of a policy that separates approvers: the approvers the own gate counted fill
+			// no seat here (their decisions are recorded and ignored).
+			if base, ok := escalation.Base(id); ok {
+				if rt, ok := agent.RecordedTally(agent.GateTallyValues(recs, base), base); ok {
+					var own agent.ApprovalTally
+					if json.Unmarshal(rt.Result, &own) == nil {
+						for _, a := range g.Approvers {
+							if slices.ContainsFunc(slices.Concat(own.ApprovedBy, own.DeniedBy), func(c string) bool { return agent.SameApprover(a, c) }) && !slices.Contains(g.Excluded, a) {
+								g.Excluded = append(g.Excluded, a)
+								g.ExcludedBySibling = append(g.ExcludedBySibling, a)
+							}
+						}
+					}
 				}
 			}
 		}

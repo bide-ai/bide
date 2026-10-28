@@ -153,7 +153,7 @@ func (d RegistryDescription) checkTaint() error {
 		if err != nil {
 			return fmt.Errorf("taint policy: %w", err)
 		}
-		if err := toolhook.CheckTaintPolicy(agent.TaintPolicy{Gate: g, Refuse: p.Refuse, RequireProvenance: p.RequireProvenance}); err != nil {
+		if err := toolhook.CheckTaintPolicy(agent.TaintPolicy{Gate: g, Refuse: p.Refuse, RequireProvenance: p.RequireProvenance, SeparateApprovers: p.SeparateApprovers}); err != nil {
 			return fmt.Errorf("taint policy: %w", err)
 		}
 	}

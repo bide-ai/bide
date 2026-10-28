@@ -440,3 +440,85 @@ func TestBuild_EscalationInstanceOfAnUngatedNodeIsAGate(t *testing.T) {
 		t.Errorf("the instance's gate after its decision = %+v, %v; want tallied with risk's decision", g, ok)
 	}
 }
+
+// The escalation instance of a call whose taint policy separates approvers leaves out the approvers the call's own
+// gate counted: the gate lists them as excluded by the sibling, not as pending, and their card says why.
+func TestBuild_AnInstanceLeavesOutTheApproversTheOwnGateCounted(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "esc1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	view := func(j *agent.Journal) Gate {
+		t.Helper()
+		recs, err := j.History(ctx, taintfixture.Run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range Build(ctx, taintfixture.Run, recs, nil).Gates {
+			if g.ToolUseID == "c2#taint" {
+				return g
+			}
+		}
+		t.Fatal("no escalation gate")
+		return Gate{}
+	}
+	// Not separated: esc1 is a pending approver of the instance.
+	if g := view(f.Journal); !slices.Equal(g.Pending, []string{"esc1", "esc2"}) || len(g.ExcludedBySibling) != 0 {
+		t.Fatalf("an unseparated instance: pending %v, excluded by the sibling %v", g.Pending, g.ExcludedBySibling)
+	}
+	g := view(taintfixture.Separated(t, f.Journal, taintfixture.Run, "c2"))
+	if !slices.Equal(g.ExcludedBySibling, []string{"esc1"}) || !slices.Equal(g.Excluded, []string{"esc1"}) || !slices.Equal(g.Pending, []string{"esc2"}) {
+		t.Fatalf("a separated instance: excluded by the sibling %v, excluded %v, pending %v; want esc1 excluded and esc2 pending", g.ExcludedBySibling, g.Excluded, g.Pending)
+	}
+	found := false
+	for _, c := range cards(g, nil) {
+		if c.Name == "esc1" {
+			found = c.State == "excluded" && strings.Contains(c.Why, "already decided on the call's own gate")
+		}
+	}
+	if !found {
+		t.Errorf("esc1's card does not say it was counted on the own gate: %+v", cards(g, nil))
+	}
+	// The call's own gate is not separated from itself.
+	recs, _ := taintfixture.Separated(t, f.Journal, taintfixture.Run, "c2").History(ctx, taintfixture.Run)
+	for _, og := range Build(ctx, taintfixture.Run, recs, nil).Gates {
+		if og.ToolUseID == "c2" && len(og.ExcludedBySibling) != 0 {
+			t.Errorf("the call's own gate excludes %v", og.ExcludedBySibling)
+		}
+	}
+}
+
+// The approver the own gate counted as a denier is left out of the instance too, and a recorded tally's exclusion by
+// the sibling is shown as it is.
+func TestBuild_AnInstanceLeavesOutADenierOfTheOwnGateAndShowsARecordedExclusion(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "own1"}})
+	f.Esc = &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "esc2"}}
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "esc1", false); err != nil { // esc1 denies; own1 approves, which passes the gate
+		t.Fatal(err)
+	}
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	sep := taintfixture.Separated(t, f.Journal, taintfixture.Run, "c2")
+	recs, _ := sep.History(ctx, taintfixture.Run)
+	for _, g := range Build(ctx, taintfixture.Run, recs, nil).Gates {
+		if g.ToolUseID == "c2#taint" && !slices.Equal(g.ExcludedBySibling, []string{"esc1"}) {
+			t.Errorf("a denier of the own gate: excluded by the sibling %v, want esc1", g.ExcludedBySibling)
+		}
+	}
+	// A tally the gate recorded with an exclusion by the sibling (as an engine that separated would): the view shows it.
+	tallied := append([]agent.Record(nil), recs...)
+	body, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"esc1", "esc2"}, Excluded: []string{"esc1"}, ExcludedBySibling: []string{"esc1"}, Approved: 1, ApprovedBy: []string{"esc2"}, DecisionFormat: agent.DecisionFormat})
+	tallied = append(tallied, agent.Record{Name: agent.ApprovalTallyStep("c2#taint"), Kind: agent.StepValue, Result: body})
+	for _, g := range Build(ctx, taintfixture.Run, tallied, nil).Gates {
+		if g.ToolUseID == "c2#taint" && (!g.Tallied || !slices.Equal(g.ExcludedBySibling, []string{"esc1"})) {
+			t.Errorf("a recorded tally: tallied %v, excluded by the sibling %v; want esc1", g.Tallied, g.ExcludedBySibling)
+		}
+	}
+}

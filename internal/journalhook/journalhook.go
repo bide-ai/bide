@@ -127,6 +127,8 @@ type FlowTaint struct {
 	Gate              any
 	Refuse            bool
 	RequireProvenance bool
+	// SeparateApprovers: the escalation gate excludes the approvers the node's own gate counted.
+	SeparateApprovers bool
 	Nodes             map[string]FlowTaintNode
 }
 
@@ -176,8 +178,9 @@ var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, 
 // about to run in a run at standing: it computes the node's read set from the journal, records the
 // gate-reason record (insert-once), and returns the escalation Gate the node's instance needs, nothing, or an
 // error that wraps ErrTaintRefused for a refused node (recorded, and no node record written). The agent
-// package sets it in init.
-var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, safety any, standing int) (FlowTaintDecision, error)
+// package sets it in init. ownGate says the node has a gate of its own: with the policy's SeparateApprovers, the
+// escalation Gate returned is then kept apart from it (the approvers its terminal tally counted do not count).
+var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, safety any, standing int, ownGate bool) (FlowTaintDecision, error)
 
 // FlowTaintSink sends the marks the run runID has learned to the node that started it, when ctx carries that
 // node's sink: the sources the node nodeKey declares once its result is recorded and those its own children

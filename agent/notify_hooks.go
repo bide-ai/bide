@@ -38,9 +38,13 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		if q := p.Quorum; q != nil {
 			ap.Need, ap.Of, ap.Approved = q.Need, len(q.Approvers), q.Approved
 			ap.Approvers = append([]string(nil), q.Approvers...)
-			if q.ExcludePrincipal {
-				ap.Excluded = append([]string(nil), q.Excluded...)
+			switch {
+			case q.ExcludePrincipal:
+				ap.Excluded = append([]string(nil), q.Excluded...) // the sibling-excluded are among them
+			case len(q.ExcludedBySibling) > 0:
+				ap.Excluded = append([]string(nil), q.ExcludedBySibling...)
 			}
+			ap.siblingExcluded = append([]string(nil), q.ExcludedBySibling...)
 		}
 		key := ApprovalKey(p.RunID, p.ToolUseID, 0)
 		if p.Reason != "" { // the gate asks again: a new ask, not a repeat of the first

@@ -198,7 +198,8 @@ func (a *Agent) escalate(ctx context.Context, runID string, tu ToolUse, spec *To
 	}
 	exempt := spec.TaintExempt != "" // from the registered spec, never from a record
 	if !have {
-		rec = gateReasonRecord{Format: gateReasonFormat, ToolUseID: tu.ID, Reasons: reasons, PolicyDigest: gateDigest(a.taint.Gate), Gate: a.taint.Gate.Clone(), RecordedAt: noteStamp(clockFrom(ctx))}
+		rec = gateReasonRecord{Format: gateReasonFormat, ToolUseID: tu.ID, Reasons: reasons, PolicyDigest: gateDigest(a.taint.Gate), Gate: a.taint.Gate.Clone(), RecordedAt: noteStamp(clockFrom(ctx)),
+			SeparateApprovers: a.taint.SeparateApprovers && effectiveGates(spec, gateInputs{}).Own() != nil}
 		if exempt {
 			rec.Exempt = spec.TaintExempt
 		}
@@ -212,7 +213,11 @@ func (a *Agent) escalate(ctx context.Context, runID string, tu ToolUse, spec *To
 	if a.taint.Refuse {
 		return escalation{refuse: true}, nil
 	}
-	return escalation{gate: a.taint.Gate}, nil
+	gate := a.taint.Gate
+	if a.taint.SeparateApprovers && effectiveGates(spec, gateInputs{}).Own() != nil {
+		gate = gate.separatedFrom(tu.ID) // the second look is by other people than the own gate counted
+	}
+	return escalation{gate: gate}, nil
 }
 
 // hasTally reports whether values holds the terminal tally of the gate on id.

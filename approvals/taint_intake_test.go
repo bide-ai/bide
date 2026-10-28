@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/taintfixture"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -608,5 +610,42 @@ func TestIntake_FindsAndRefusesTheInstanceOfAnUngatedNode(t *testing.T) {
 	recs, _ = j.History(ctx, "f1")
 	if len(recs) != before {
 		t.Error("a decision on a flow gate was recorded")
+	}
+}
+
+// The escalation instance of a call whose taint policy separates approvers is not decided by the approvers the
+// call's own gate counted: the intake refuses their decision with a reason, records nothing, and lists them as
+// excluded; the other approvers decide as before.
+func TestTaintIntake_ARefusesTheApproverTheOwnGateCounted(t *testing.T) {
+	r := newTaintRig(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "own1"}})
+	r.esc = &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "esc2"}}
+	if err := r.drive(); !agent.IsPause(err) {
+		t.Fatalf("first drive = %v, want a pause on the tool's own gate", err)
+	}
+	r.serve()
+	if status, out := r.decide("c2", "c2", "esc1", true); status != http.StatusOK || out["counted"] != true {
+		t.Fatalf("esc1 on the own gate: %d %v", status, out)
+	}
+	if err := r.drive(); !agent.IsPause(err) {
+		t.Fatalf("second drive = %v, want a pause on the escalation instance", err)
+	}
+	// The same journal with the record that says the policy separates approvers.
+	r.app = taintfixture.Separated(t, r.app, r.runID, "c2")
+	r.serve()
+	status, out := r.pending("c2%23taint")
+	g, _ := out["gate"].(map[string]any)
+	if status != http.StatusOK || !strings.Contains(fmt.Sprint(g["excluded"]), "esc1") {
+		t.Fatalf("the escalation gate's standing: %d %v; want esc1 excluded", status, out)
+	}
+	before, _ := r.app.History(context.Background(), r.runID)
+	status, out = r.decide("c2#taint", "c2#taint", "esc1", true)
+	if e, _ := out["error"].(map[string]any); status != http.StatusForbidden || e["code"] != "excluded_by_sibling" || !strings.Contains(fmt.Sprint(e["message"]), "own gate") {
+		t.Fatalf("esc1 on the separated instance: %d %v; want a refusal naming the own gate", status, out)
+	}
+	if after, _ := r.app.History(context.Background(), r.runID); len(after) != len(before) {
+		t.Errorf("the refused decision was recorded: %d records, was %d", len(after), len(before))
+	}
+	if status, out := r.decide("c2#taint", "c2#taint", "esc2", true); status != http.StatusOK || out["counted"] != true {
+		t.Fatalf("esc2 on the separated instance: %d %v", status, out)
 	}
 }

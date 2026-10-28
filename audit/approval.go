@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -222,6 +224,18 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 				return nil, err
 			}
 			out = append(out, EvidenceAction{Label: n, Kind: KindStep, Ref: n, Bundle: pb})
+		}
+	}
+	// The instance of a call or node (the taint policy's gate) is counted apart from the gate of its own when the
+	// policy separates approvers (agent.ApprovalPolicy.SeparatedFrom): the own gate's terminal tally, which names
+	// the approvers to leave out, travels with the evidence (Kind "approval-tally").
+	if own, isInstance := escalation.Base(toolUseID); isInstance {
+		if ot, ok := agent.RecordedTally(agent.GateTallyValues(recs, own), own); ok {
+			pb, err := prove(index[ot.Name])
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, EvidenceAction{Label: "approval tally", Kind: KindApprovalTally, Ref: ot.Name, Bundle: pb})
 		}
 	}
 	out = append(out,
@@ -568,8 +582,54 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		decisions[i] = d.rec
 	}
 
+	// Separated approvers: the approvers the call's own gate counted do not count on this instance. The evidence
+	// must prove the own gate's terminal tally, under the same head and run, before this one; the recount reads
+	// who it counted from it, as the gate did. Without it the recount counts no one.
+	counted := append(start, decisions...)
+	// The own gate is the call's or node's the instance belongs to; whether the policy separates approvers is
+	// what agent.ApprovalPolicy.SeparatedFrom marks. A subject it was given that does not match the instance's base
+	// finds no own outcome in the recount and counts no one, so it fails closed.
+	own := ""
+	if base, isInstance := escalation.Base(toolUseID); isInstance && separates(policy) {
+		own = base
+	}
+	switch {
+	case own == "" && len(tally.ExcludedBySibling) > 0:
+		problem("the gate excluded %v as counted on the call's own gate (excluded_by_sibling), but the expected policy does not separate approvers", tally.ExcludedBySibling)
+	case own != "":
+		ownBy := map[string]agent.Record{}
+		ownAt := map[string]int{}
+		for i, a := range actions {
+			if a.Kind == KindApprovalTally {
+				if _, dup := ownBy[recs[i].Name]; !dup {
+					ownBy[recs[i].Name], ownAt[recs[i].Name] = recs[i], i
+				}
+			}
+		}
+		ort, ok := agent.RecordedTally(agent.GateTallyValues(slices.Collect(maps.Values(ownBy)), own), own)
+		switch {
+		case !ok:
+			problem("the evidence has no outcome of the call's own gate %q, which the policy separates approvers from; the recount counts no one", own)
+		default:
+			oa := &actions[ownAt[ort.Name]]
+			err := oa.Bundle.Verify(logV)
+			if err != nil && !errors.Is(err, ErrNotVerified) {
+				return v, err
+			}
+			switch {
+			case err != nil:
+				problem("the proof of the own gate's tally does not verify under the log key; the recount counts no one")
+			case !sameTreeHead(oa.Bundle.STH, sth) || oa.Bundle.RunID != runID:
+				problem("the own gate's tally is not proven under the same signed tree head and run as the result; the recount counts no one")
+			case oa.Bundle.Inclusion.Index >= tallyIdx:
+				problem("the own gate's tally is at %d, not before the instance's tally at %d; the recount counts no one", oa.Bundle.Inclusion.Index, tallyIdx)
+			default:
+				counted = append([]agent.Record{ort}, counted...)
+			}
+		}
+	}
 	subject := agent.ApprovalSubject{RunID: runID, ToolUseID: toolUseID, ToolName: call.Name, Args: call.Args}
-	got, checks := agent.TallyApprovals(append(start, decisions...), subject, policy, verifierFor)
+	got, checks := agent.TallyApprovals(counted, subject, policy, verifierFor)
 	for _, c := range checks {
 		if !c.Counted {
 			v.Ignored = append(v.Ignored, IgnoredDecision{Approver: c.Approver, Step: c.Step, Reason: c.Reason})
@@ -589,6 +649,9 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		problem("the recount (approved by %v, denied by %v) disagrees with the gate's journaled tally (approved by %v, denied by %v)",
 			got.ApprovedBy, got.DeniedBy, tally.ApprovedBy, tally.DeniedBy)
 	}
+	if !slices.Equal(got.ExcludedBySibling, tally.ExcludedBySibling) {
+		problem("the recount excludes %v as counted on the call's own gate, but the gate's journaled tally names %v (excluded_by_sibling)", got.ExcludedBySibling, tally.ExcludedBySibling)
+	}
 	v.OK = len(v.Problems) == 0 && got.Passed()
 	if !v.OK {
 		return v, notVerified("audit: the approval gate on call %q: %d of %d required approvals verified, %d problems", toolUseID, len(v.Counted), v.Need, len(v.Problems))
@@ -598,4 +661,10 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 
 func sameTreeHead(a, b SignedTreeHead) bool {
 	return a.Size == b.Size && bytes.Equal(a.Root, b.Root) && bytes.Equal(a.Signature, b.Signature)
+}
+
+// separates reports whether policy was marked with agent.ApprovalPolicy.SeparatedFrom: SeparatedFrom("") clears the
+// marker, so a policy differs from its SeparatedFrom("") copy exactly when it was marked.
+func separates(policy agent.ApprovalPolicy) bool {
+	return !reflect.DeepEqual(policy, policy.SeparatedFrom(""))
 }

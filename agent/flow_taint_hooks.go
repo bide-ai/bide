@@ -25,7 +25,7 @@ func init() {
 
 // declsOf converts the plain declarations of package plan.
 func declsOf(d *journalhook.FlowTaint) (flowTaintDecls, error) {
-	out := flowTaintDecls{Policy: flowTaintPolicy{Refuse: d.Refuse, RequireProvenance: d.RequireProvenance}}
+	out := flowTaintDecls{Policy: flowTaintPolicy{Refuse: d.Refuse, RequireProvenance: d.RequireProvenance, SeparateApprovers: d.SeparateApprovers}}
 	if d.Gate != nil {
 		g, ok := d.Gate.(*ApprovalPolicy)
 		if !ok {
@@ -197,7 +197,7 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 // gate the node's instance needs. A refused node leaves its gate-reason record (refused) and no record of its
 // own, and the error wraps ErrTaintRefused. The decision's context binds the run's status and the read set for
 // the runs the node's body starts, for a node that can have a side effect or not.
-func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any, standing int) (journalhook.FlowTaintDecision, error) {
+func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any, standing int, ownGate bool) (journalhook.FlowTaintDecision, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: FlowTaintNode: %T is not a journal: %w", j, ErrConfig)
@@ -279,7 +279,8 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	}
 	if !found {
 		rec := gateReasonRecord{Format: gateReasonFormat, ToolUseID: nodeKey, Reasons: req.Reasons, PolicyDigest: gateDigest(decls.Policy.Gate),
-			Gate: decls.Policy.Gate.Clone(), Exempt: req.Exempt, Refused: req.Required && req.Refuse, RecordedAt: noteStamp(clockFrom(ctx))}
+			Gate: decls.Policy.Gate.Clone(), Exempt: req.Exempt, Refused: req.Required && req.Refuse, RecordedAt: noteStamp(clockFrom(ctx)),
+			SeparateApprovers: decls.Policy.SeparateApprovers && ownGate}
 		winner, _, err := putGateReason(ctx, jr, runID, rec)
 		if err != nil {
 			return journalhook.FlowTaintDecision{}, err
@@ -293,7 +294,11 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	case req.Refuse:
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("node %q: %s: %w", nodeKey, reasonText(req.Reasons), journalhook.ErrTaintRefused)
 	}
-	return journalhook.FlowTaintDecision{Gate: req.Gate, Ctx: bound}, nil
+	gate := req.Gate
+	if decls.Policy.SeparateApprovers && ownGate {
+		gate = gate.separatedFrom(nodeKey)
+	}
+	return journalhook.FlowTaintDecision{Gate: gate, Ctx: bound}, nil
 }
 
 // protocol:flows end

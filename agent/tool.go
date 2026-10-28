@@ -230,6 +230,12 @@ type ApprovalPolicy struct {
 	// unexported so no literal can set it; MarshalJSON journals it as {"single":true}. The gate a
 	// run enforces is always the registered tool's, never one read back from the journal.
 	one bool
+
+	// sibling is the subject of the own gate this policy, the taint policy's escalation Gate on a call's instance,
+	// is kept apart from (TaintPolicy.SeparateApprovers): the approvers whose decisions that gate's terminal tally
+	// counted do not count here. Unexported, so no literal sets it and it is in no journaled form or digest; the
+	// engine sets it on the copy of the Gate it evaluates for an instance whose call has an own gate.
+	sibling string
 }
 
 // SingleApproval returns the one-decision gate: a call pauses as *ApprovalPending until Approve
@@ -316,7 +322,27 @@ func (p *ApprovalPolicy) Clone() *ApprovalPolicy {
 	if p == nil {
 		return nil
 	}
-	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), ExcludePrincipal: p.ExcludePrincipal, Timeout: p.Timeout, one: p.one}
+	return &ApprovalPolicy{Need: p.Need, Approvers: slices.Clone(p.Approvers), ExcludePrincipal: p.ExcludePrincipal, Timeout: p.Timeout, one: p.one, sibling: p.sibling}
+}
+
+// SeparatedFrom returns a copy of p that excludes the approvers the terminal tally of the gate on subject own
+// counted: the rule the escalation Gate of a taint policy that separates approvers (TaintPolicy.SeparateApprovers)
+// is counted under on a call's instance, for an offline recount (audit.VerifyApprovals, with the own gate's tally
+// among the evidence). Experimental.
+func (p ApprovalPolicy) SeparatedFrom(own string) ApprovalPolicy {
+	p.Approvers = slices.Clone(p.Approvers)
+	p.sibling = own
+	return p
+}
+
+// separatedFrom returns a copy of p that excludes the approvers the terminal tally of the gate on subject own
+// counted (see sibling). A nil p stays nil.
+func (p *ApprovalPolicy) separatedFrom(own string) *ApprovalPolicy {
+	c := p.Clone()
+	if c != nil {
+		c.sibling = own
+	}
+	return c
 }
 
 // checkApproval reports whether p is a gate the agent can enforce (see Validate).

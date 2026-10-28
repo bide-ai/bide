@@ -121,6 +121,8 @@ func TestDiff_Classifies(t *testing.T) {
 		{"m-of-n becomes one decision", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Single: true}))), []want{{Weakened, "policy", "one decision"}}},
 		{"one decision becomes m-of-n", doc(pol(gate(Gate{Single: true}))), doc(pol(twoOfTwo)), []want{{Strengthened, "policy", "m-of-n"}}},
 		{"RequireProvenance is dropped", doc(&Policy{Refuse: true, RequireProvenance: true}), doc(&Policy{Refuse: true}), []want{{Weakened, "policy", "no longer required"}}},
+		{"SeparateApprovers is dropped", doc(&Policy{Gate: twoOfTwo, SeparateApprovers: true}), doc(&Policy{Gate: twoOfTwo}), []want{{Weakened, "policy", "no longer excludes"}}},
+		{"SeparateApprovers is turned on", doc(&Policy{Gate: twoOfTwo}), doc(&Policy{Gate: twoOfTwo, SeparateApprovers: true}), []want{{Strengthened, "policy", "now excludes"}}},
 		{"RequireProvenance is turned on", doc(&Policy{Refuse: true}), doc(&Policy{Refuse: true, RequireProvenance: true}), []want{{Strengthened, "policy", "must now declare"}}},
 		{"a trusted output is declared", doc(pol(twoOfTwo), Tool{Name: "t"}), doc(pol(twoOfTwo), Tool{Name: "t", Trusted: "ours"}), []want{{Changed, "tool t", "trusted output is declared"}}},
 		{"a trusted output is removed", doc(pol(twoOfTwo), Tool{Name: "t", Trusted: "ours"}), doc(pol(twoOfTwo), Tool{Name: "t"}), []want{{Changed, "tool t", "declaration is removed"}}},

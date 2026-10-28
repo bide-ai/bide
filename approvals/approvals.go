@@ -1011,6 +1011,12 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_an_approver", "the approver is not one of this gate's approvers")
 		return
 	}
+	if slices.Contains(g.st.Tally.ExcludedBySibling, d.ApproverID) {
+		// The escalation gate of a policy that separates approvers leaves out the approvers the call's own gate
+		// counted: the engine would ignore this decision, so none is recorded.
+		writeError(w, http.StatusForbidden, "excluded_by_sibling", "this approver's decision was counted on the call's own gate, and the taint policy separates approvers: the second look must be by someone else")
+		return
+	}
 	idx := h.findDecision(g, d, false)
 	if idx >= 0 && !h.standsFor(g, d, idx) {
 		idx = -1 // a record of d's own bytes that is no decision (the gate ignores it): not a replay

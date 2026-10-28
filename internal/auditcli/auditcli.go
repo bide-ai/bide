@@ -39,6 +39,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/escalation"
 )
 
 // pubkeyHelp is the help text of every -pubkey flag.
@@ -1355,6 +1356,7 @@ func (c *cli) verifyApprovals(args []string) {
 	need := fs.Int("need", 0, "approvals the policy requires (k)")
 	approvers := fs.String("approvers", "", "the policy's eligible approver ids, comma-separated, in policy order")
 	excludePrincipal := fs.Bool("exclude-principal", false, "the policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); the evidence must prove the run's run:principal")
+	separateApprovers := fs.Bool("separate-approvers", false, `the policy is the escalation gate of a taint policy that separates approvers (-call is the instance, "<call>#taint" or "node:<name>:taint"): the approvers the call's or node's own gate counted do not count here; the evidence must prove that gate's tally`)
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>, or bare ed25519 hex), e.g. {"ops":"ed25519:ab12..."} or {"ops":"ecdsa-p256:04ab..."}`)
 	var approved stringList
 	fs.Var(&approved, "approved", "an approved policy digest for the package's run certificate; repeat once per allowed policy")
@@ -1371,6 +1373,13 @@ func (c *cli) verifyApprovals(args []string) {
 	policy := agent.ApprovalPolicy{Need: *need, Approvers: strings.Split(*approvers, ","), ExcludePrincipal: *excludePrincipal}
 	if err := policy.Validate(); err != nil {
 		c.usageError(fmt.Sprintf("verify-approvals: -need and -approvers: %v", err))
+	}
+	if *separateApprovers {
+		own, instance := escalation.Base(*call)
+		if !instance {
+			c.usageError("verify-approvals: -separate-approvers needs -call to be an escalation instance (\"<call>#taint\" or \"node:<name>:taint\")")
+		}
+		policy = policy.SeparatedFrom(own)
 	}
 	var pkg audit.EvidencePackage
 	okPkg := c.note(c.readJSON(*evidencePath, &pkg))

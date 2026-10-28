@@ -172,7 +172,7 @@ func TestFlowTaintNode_InheritedMarksGateAndAreBound(t *testing.T) {
 	m1 := taintMark{Source: "inbound-email", Ref: "node:fetch"}
 	// An own-policy flow whose journal holds no source of its own: the inherited mark alone gates a side effect.
 	j, _ := beginNested(t, taintedCtx(m1), hookDecls(func(d *journalhook.FlowTaint) { d.Nodes = nil }), nil)
-	d, err := flowTaintNode(ctx, j, "r1", "node:pay", Safety{}, journalhook.FlowTaintUnder)
+	d, err := flowTaintNode(ctx, j, "r1", "node:pay", Safety{}, journalhook.FlowTaintUnder, false)
 	if err != nil || d.Gate == nil {
 		t.Fatalf("decision %+v, %v; want the gate", d, err)
 	}
@@ -185,7 +185,7 @@ func TestFlowTaintNode_InheritedMarksGateAndAreBound(t *testing.T) {
 	d2 := hookDecls(nil)
 	jj, _ := beginNested(t, taintedCtx(m1, taintMark{Source: "crm", Ref: "node:look"}), d2, nil)
 	put(t, jj, "node:fetch") // declares inbound-email again, in this run
-	dec, err := flowTaintNode(ctx, jj, "r1", "node:pay", Safety{}, journalhook.FlowTaintUnder)
+	dec, err := flowTaintNode(ctx, jj, "r1", "node:pay", Safety{}, journalhook.FlowTaintUnder, false)
 	if err != nil || dec.Ctx == nil {
 		t.Fatalf("decision %+v, %v", dec, err)
 	}
@@ -199,14 +199,14 @@ func TestFlowTaintNode_InheritedMarksGateAndAreBound(t *testing.T) {
 	}
 	// A policyless inherited run: read-only nodes get the bound context and no gate, side effects are refused.
 	jp, _ := beginNested(t, taintedCtx(m1), nil, nil)
-	dr, err := flowTaintNode(ctx, jp, "r1", "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintPolicyless)
+	dr, err := flowTaintNode(ctx, jp, "r1", "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintPolicyless, false)
 	if err != nil || dr.Gate != nil || underTaintFrom(dr.Ctx) != parentDigest {
 		t.Errorf("a read-only node of a policyless inherited run: %+v, %v", dr, err)
 	}
 	if c, ok := callMarksFrom(dr.Ctx); !ok || len(c.list) != 1 || c.list[0].Ref != "parent:node:fetch" {
 		t.Errorf("its bound marks: %+v, %v", c, ok)
 	}
-	if _, err := flowTaintNode(ctx, jp, "r1", "node:pay", Safety{}, journalhook.FlowTaintPolicyless); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintNode(ctx, jp, "r1", "node:pay", Safety{}, journalhook.FlowTaintPolicyless, false); !errors.Is(err, ErrConfig) {
 		t.Errorf("a side effect of a policyless inherited run: %v, want ErrConfig", err)
 	}
 }

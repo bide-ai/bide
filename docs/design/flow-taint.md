@@ -1,8 +1,8 @@
 # Design: taint in plan flows, and its view in the flow editor
 
-Status: Part A is built except `SeparateApprovers` (the run-time rule, the declarations in `run:start`, Conform,
-nested flows and the sink for taint coming up are enforced; the disjoint-approvers option is the pull request
-that follows) and Part B (the view in `bide check` and the editor) is not. This text was written before the
+Status: Part A is built (the run-time rule, the declarations in `run:start`, Conform, nested flows, the sink for
+taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B (the view in `bide check` and the
+editor) is in progress. This text was written before the
 code and keeps its original wording where the code follows it; "today" in section 0 means `main` at the commit
 named below. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
@@ -275,6 +275,26 @@ instance cannot count for the other (the signature binds the subject key, `stale
   certificate-bound gate the decider identity is the approver name, not the certificate subject; the
   approver-identity design is the future layer for both.
 - Names: one exported field. Flag: none. Config key: none.
+- Names added by 3d (user decision of 2026-10-28), beyond `TaintPolicy.SeparateApprovers`: the method
+  `ApprovalPolicy.SeparatedFrom(ownSubject)` (an offline recount states its expectation in the policy it is given;
+  there is no accessor, and `audit.VerifyApprovals` takes the own gate from the instance's subject); the tally's
+  `excluded_by_sibling` field (who was excluded and why, self-describing evidence); the flag
+  `bide audit verify-approvals -separate-approvers` (a boolean, the own gate derived from the instance in `-call`);
+  and `separate_approvers` in the gate-reason record, which the readers of a journal use to tell a separated
+  instance (a journal-format field, approved with the other names on 2026-10-28).
+- As built (3d): the field is `TaintPolicy.SeparateApprovers`; the instance's gate is a copy of the policy's Gate
+  that remembers the own gate's subject (unexported, so in no digest or journaled form), and the count reads the
+  own gate's terminal tally from the journal, excluding the approvers it counted (`excluded_by_sibling`, also in
+  `Excluded`, so too few left is `Unreachable`, a recorded denial). The instance never writes the own gate's
+  records. A call whose own gate is a cap rule's is not separated (the cap gate is chosen per call, and the
+  registration check cannot see it). Offline: the evidence of an instance carries the own gate's tally, and
+  `ApprovalPolicy.SeparatedFrom(ownSubject)` with `audit.VerifyApprovals` (CLI: `bide audit verify-approvals -separate-approvers`, the own gate taken from the instance in `-call`) recounts with
+  the same exclusion. The readers of a journal learn that an instance is separated from the call's gate-reason
+  record (`separate_approvers`, set only for a call or node that has an own gate): `EvaluateGate` and
+  `TallyApprovals` count such an instance apart from the own gate; the approvals intake refuses an excluded
+  approver's decision (`excluded_by_sibling`, 403) instead of recording one the engine ignores; the viewer lists
+  them excluded with the reason; `bide approve` refuses them and `-list` names them; the notifier lists them in
+  `excluded` and routes no receiver for them (user decision of 2026-10-28).
 
 **Options a flow run takes.** `Flow.Run` takes `WithIdentity` through `journalhook.RunIdentity` today. It
 also takes `WithUntrustedInput` / `WithTrustedInput`, recorded in the start settings; a drive's option that

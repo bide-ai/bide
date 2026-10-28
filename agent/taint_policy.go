@@ -30,6 +30,14 @@ type TaintPolicy struct {
 	// error, and a Run, Send or SendOnce that states neither WithUntrustedInput nor WithTrustedInput an error
 	// at its first drive (a sub-agent's run and a resume are not asked). Experimental.
 	RequireProvenance bool
+	// SeparateApprovers makes the escalation gate a second look by other people: on a call's escalation
+	// instance, the approvers whose decisions the call's own gate counted do not count (the instance's tally
+	// excludes them), and a tool with an own gate whose approvers share an ID with the Gate is ErrConfig at New.
+	// It needs an m-of-n Gate whose approvers are named (a SingleApproval has no approver IDs to separate), and
+	// an own gate that is m-of-n too. When the approvers left cannot reach the Gate's Need, the instance is
+	// denied, not left waiting. It works on approver IDs: two IDs of one person are not told apart.
+	// Experimental.
+	SeparateApprovers bool
 }
 
 // check refuses a policy that gates nothing, or gates with an invalid policy.
@@ -42,6 +50,14 @@ func (p TaintPolicy) check() error {
 	case p.Gate != nil:
 		if err := checkApproval(p.Gate); err != nil {
 			return fmt.Errorf("agent: the taint policy's Gate: %w", err)
+		}
+	}
+	if p.SeparateApprovers {
+		switch {
+		case p.Gate == nil:
+			return fmt.Errorf("agent: a taint policy that separates approvers needs an escalation Gate, not Refuse: %w", ErrConfig)
+		case p.Gate.single():
+			return fmt.Errorf("agent: a taint policy that separates approvers needs an m-of-n Gate: a SingleApproval has no approver IDs to keep apart from the own gate's: %w", ErrConfig)
 		}
 	}
 	return nil
@@ -78,7 +94,9 @@ type taintDeclarations struct {
 	Refuse bool            `json:"refuse,omitempty"`
 	// RequireProvenance is in the digest only when set, so a policy that does not require it digests as it did
 	// before the requirement existed.
-	RequireProvenance bool                     `json:"require_provenance,omitempty"`
+	RequireProvenance bool `json:"require_provenance,omitempty"`
+	// SeparateApprovers is in the digest only when set, for the same reason.
+	SeparateApprovers bool                     `json:"separate_approvers,omitempty"`
 	Tools             map[string]toolTaintDecl `json:"tools,omitempty"`
 }
 
@@ -106,7 +124,7 @@ func (a *Agent) taintDigest() string {
 	if a.taint == nil {
 		return ""
 	}
-	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
+	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance, SeparateApprovers: a.taint.SeparateApprovers}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
 		if src := s.untrustedSource(); src != "" || s.Trusted != "" || s.TaintExempt != "" || s.RaisesSafety != "" || len(s.Caps) > 0 {

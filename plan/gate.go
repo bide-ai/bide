@@ -48,7 +48,7 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 	bodyCtx := ctx
 	var escalationGate any
 	if ts != nil && ts.standing != 0 {
-		dec, err := journalhook.FlowTaintNodeHook(ctx, store, runID, key, node.safety, ts.standing)
+		dec, err := journalhook.FlowTaintNodeHook(ctx, store, runID, key, node.safety, ts.standing, node.approval != nil)
 		if err != nil {
 			if errors.Is(err, journalhook.ErrTaintRefused) {
 				return ctx, fmt.Errorf("plan: run %q: step %q (%s): %w: %w", c.flowName, node.name, key, ErrTaintRefused, err)

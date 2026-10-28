@@ -162,6 +162,13 @@ func diffPolicies(old, new *Policy, unit string) []Change {
 			out = append(out, Change{Weakened, "policy", unit + "s and runs are no longer required to declare a provenance", true})
 		}
 	}
+	if old != nil && new != nil && old.SeparateApprovers != new.SeparateApprovers {
+		if new.SeparateApprovers {
+			out = append(out, Change{Strengthened, "policy", "the escalation gate now excludes the approvers a call's own gate counted", true})
+		} else {
+			out = append(out, Change{Weakened, "policy", "the escalation gate no longer excludes the approvers a call's own gate counted: one person can approve both", true})
+		}
+	}
 	return out
 }
 

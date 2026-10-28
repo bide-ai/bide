@@ -180,7 +180,7 @@ func (c *builderCore) flowTaint() *journalhook.FlowTaint {
 	if c.taintPolicy == nil {
 		return nil
 	}
-	d := &journalhook.FlowTaint{Refuse: c.taintPolicy.Refuse, RequireProvenance: c.taintPolicy.RequireProvenance}
+	d := &journalhook.FlowTaint{Refuse: c.taintPolicy.Refuse, RequireProvenance: c.taintPolicy.RequireProvenance, SeparateApprovers: c.taintPolicy.SeparateApprovers}
 	if c.taintPolicy.Gate != nil {
 		d.Gate = c.taintPolicy.Gate.Clone()
 	}
@@ -194,6 +194,36 @@ func (c *builderCore) flowTaint() *journalhook.FlowTaint {
 		d.Nodes[n.name] = journalhook.FlowTaintNode{Untrusted: slices.Clone(n.taint.untrusted), Trusted: n.taint.trusted, Exempt: n.taint.exempt}
 	}
 	return d
+}
+
+// checkSeparation holds the nodes to a policy that separates approvers (TaintPolicy.SeparateApprovers): a node
+// that can be escalated (it can have a side effect and is not exempt) and has an own gate needs that gate to
+// be m-of-n, and its approvers to share no ID with the policy's Gate. It runs at Build, on the final node set,
+// after a config has been lowered into it; a read-only or exempt node is skipped.
+func (c *builderCore) checkSeparation() error {
+	if !c.taintPolicy.SeparateApprovers {
+		return nil
+	}
+	esc := c.taintPolicy.Gate
+	for _, n := range c.nodes {
+		if n.approval == nil || n.safety.ReadOnly || n.taint.exempt != "" {
+			continue
+		}
+		if topologyGate(n.approval).Single {
+			return fmt.Errorf("plan: build %q: node %q has an own gate that is one decision (Approval(SingleApproval)) and the taint policy separates approvers: a single gate has no approver IDs to keep apart; make it m-of-n, or declare the node TaintExempt: %w", c.flowName, n.name, agent.ErrConfig)
+		}
+		var shared []string
+		for _, id := range n.approval.Approvers {
+			if slices.ContainsFunc(esc.Approvers, func(e string) bool { return agent.SameApprover(id, e) }) && !slices.Contains(shared, id) {
+				shared = append(shared, id)
+			}
+		}
+		if len(shared) > 0 {
+			slices.Sort(shared)
+			return fmt.Errorf("plan: build %q: node %q has an own gate and the taint policy's Gate that share the approvers %s, and the policy separates approvers: the second look could be one person; give the gates disjoint approvers: %w", c.flowName, n.name, strings.Join(shared, ", "), agent.ErrConfig)
+		}
+	}
+	return nil
 }
 
 // declaredSources are the sources each node declares, by node name, sorted: nil when no node declares one. A flow
@@ -223,6 +253,9 @@ func (c *builderCore) checkTaintPolicy() error {
 	}
 	if g := c.taintPolicy.Gate; g != nil && !topologyGate(g).Single && c.approverVerifiers == nil {
 		return fmt.Errorf("plan: build %q: the taint policy's escalation gate (%s) is m-of-n but the flow has no approver verifiers; bind them with WithApproverVerifiers (or WithLoadedApproverVerifiers): %w", c.flowName, gateText(g), agent.ErrConfig)
+	}
+	if err := c.checkSeparation(); err != nil {
+		return err
 	}
 	if !c.taintPolicy.RequireProvenance {
 		return nil

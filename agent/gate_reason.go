@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	escsubject "github.com/bide-ai/bide/internal/escalation"
 	"github.com/bide-ai/bide/internal/strictjson"
 )
 
@@ -85,8 +86,33 @@ type gateReasonRecord struct {
 	Exempt string          `json:"exempt,omitempty"`
 	// Refused says the node of a plan flow was refused for these reasons under a Refuse policy: it is not run
 	// and not asked, and a later drive refuses it again. Like a reason, it can only add a requirement.
-	Refused    bool   `json:"refused,omitempty"`
-	RecordedAt string `json:"recorded_at,omitempty"`
+	Refused bool `json:"refused,omitempty"`
+	// SeparateApprovers says the escalation gate the call was held under is kept apart from the call's own gate: the
+	// approvers its terminal tally counted do not count on the instance (TaintPolicy.SeparateApprovers). It is set
+	// only for a call that has an own gate, so a reader (a viewer, the intake, the notifier) can tell who may
+	// still decide. Evidence for display, never authority: the engine counts from its policy, not from this.
+	SeparateApprovers bool   `json:"separate_approvers,omitempty"`
+	RecordedAt        string `json:"recorded_at,omitempty"`
+}
+
+// separatedFromOwn is the subject of the own gate the escalation instance subject is kept apart from, "" for none:
+// the gate-reason record of the call or node the instance belongs to says its policy separates approvers. It is
+// for the readers of a journal (EvaluateGate, TallyApprovals); the engine counts from its own policy.
+func separatedFromOwn(recs []Record, instance string) string {
+	base, ok := escsubject.Base(instance)
+	if !ok {
+		return ""
+	}
+	for _, r := range recs {
+		if r.Kind != StepValue || r.Name != gateReasonStep(base) {
+			continue
+		}
+		if rec, err := decodeGateReason("", base, r); err == nil && rec.SeparateApprovers {
+			return base
+		}
+		return ""
+	}
+	return ""
 }
 
 // unionReasons is the reasons a call is gated for: those the engine recomputed now and those a record

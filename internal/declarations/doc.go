@@ -46,6 +46,8 @@ type Policy struct {
 	Refuse bool  `json:"refuse,omitempty"`
 	// RequireProvenance: every tool declares a provenance and every run states its input's.
 	RequireProvenance bool `json:"require_provenance,omitempty"`
+	// SeparateApprovers: the escalation gate excludes the approvers a call's own gate counted.
+	SeparateApprovers bool `json:"separate_approvers,omitempty"`
 }
 
 // Gate is an approval policy as the digest sees it. The approvers' keys are not part of it.
@@ -172,8 +174,9 @@ func (d Document) Recompute() string {
 		Gate              json.RawMessage     `json:"gate,omitempty"`
 		Refuse            bool                `json:"refuse,omitempty"`
 		RequireProvenance bool                `json:"require_provenance,omitempty"`
+		SeparateApprovers bool                `json:"separate_approvers,omitempty"`
 		Tools             map[string]toolDecl `json:"tools,omitempty"`
-	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse, RequireProvenance: d.Policy.RequireProvenance}
+	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse, RequireProvenance: d.Policy.RequireProvenance, SeparateApprovers: d.Policy.SeparateApprovers}
 	for _, t := range d.Tools {
 		if t.Untrusted != "" || t.Trusted != "" || t.Exempt != "" || t.RaisesSafety != "" || len(t.Caps) > 0 {
 			if covered.Tools == nil {

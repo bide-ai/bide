@@ -115,6 +115,17 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, sources map[strin
 				continue
 			}
 			reasons[rec.ToolUseID] = rec
+			// The record says whether the node's instance is kept apart from its own gate (a display reads it): it
+			// agrees with the declarations the run started under, or the record was written by something else. A
+			// node whose own gate has decided has a tally, and the policy that separates approvers says so in the
+			// record the node was held under.
+			_, ownDecided := RecordedTally(GateTallyValues(recs, rec.ToolUseID), rec.ToolUseID)
+			switch {
+			case rec.SeparateApprovers && !decls.Policy.SeparateApprovers:
+				diffs = append(diffs, r.Name+" (the record says the instance is kept apart from the node's own gate, and the run's declarations do not separate approvers)")
+			case !rec.SeparateApprovers && decls.Policy.SeparateApprovers && ownDecided:
+				diffs = append(diffs, r.Name+" (the declarations separate approvers and the node's own gate decided, but the record does not say the instance is kept apart from it)")
+			}
 		case strings.HasPrefix(r.Name, taintMarkPrefix), strings.HasPrefix(r.Name, taintChildPrefix):
 			diffs = append(diffs, linkRecordProblems(r, declared)...)
 		}

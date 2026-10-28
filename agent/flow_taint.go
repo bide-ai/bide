@@ -43,6 +43,8 @@ type flowTaintPolicy struct {
 	Gate              *ApprovalPolicy `json:"gate,omitempty"`
 	Refuse            bool            `json:"refuse,omitempty"`
 	RequireProvenance bool            `json:"require_provenance,omitempty"`
+	// SeparateApprovers: the escalation gate's approvers exclude those the node's own gate counted.
+	SeparateApprovers bool `json:"separate_approvers,omitempty"`
 }
 
 func (p flowTaintPolicy) isZero() bool { return p.Gate == nil && !p.Refuse && !p.RequireProvenance }

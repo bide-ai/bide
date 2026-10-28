@@ -89,6 +89,7 @@ type wireRecord struct {
 	Gate         any          `json:"gate"`
 	Exempt       string       `json:"exempt"`
 	Refused      bool         `json:"refused"`
+	Separate     bool         `json:"separate_approvers"`
 	RecordedAt   string       `json:"recorded_at"`
 }
 
@@ -144,6 +145,31 @@ func Find(subject string, records Records) []Reason {
 		})
 	}
 	return out
+}
+
+// Separated reports whether the escalation instance subject ("<call>#taint", "node:<name>:taint") is kept apart
+// from the call's own gate: the taint policy separates approvers, so the approvers the own gate counted do not
+// count on the instance. Every record that names the call and reads must say so (a decoy written ahead of the
+// engine's cannot turn it on alone), and a subject that is not an instance is never separated. Like a reason,
+// it is evidence for display; the gate counts from its policy.
+func Separated(subject string, records Records) bool {
+	call, instance := escalation.Base(subject)
+	if !instance {
+		return false
+	}
+	found, all := false, true
+	records(func(name string, result []byte) bool {
+		if !strings.HasPrefix(name, Prefix) {
+			return true
+		}
+		var rec wireRecord
+		if strictjson.Unmarshal(result, &rec, nil) != nil || rec.Format != recordFormat || rec.ToolUseID != call {
+			return true
+		}
+		found, all = true, all && rec.Separate
+		return true
+	})
+	return found && all
 }
 
 // sameReasons reports whether two records say the same thing to an approver: the same reasons, recorded at

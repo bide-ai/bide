@@ -40,6 +40,7 @@ func TestDeclarations_TheDigestIsTheOneRunsRecord(t *testing.T) {
 		{"single gate", &TaintPolicy{Gate: SingleApproval()}},
 		{"single gate with a timeout", &TaintPolicy{Gate: &ApprovalPolicy{Need: 1, Timeout: time.Second, one: true}}},
 		{"m-of-n", &TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true, Timeout: 90 * time.Second}}},
+		{"m-of-n, separating approvers", &TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"sec1", "sec2"}}, SeparateApprovers: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := declAgent(t, tc.policy, read, pay, exempt, gated)
