@@ -1090,9 +1090,9 @@ Not modelled, and the Go tests that cover it (3d, built). `SeparateReverse` is m
 | `VerifierIgnoresExclusion` (A5b) | `VerifyApprovals` recounts the instance with the same exclusion | 3d, built: `TestVerifyApprovals_ExcludesTheApproversTheOwnGateCounted`, `TestVerifyApprovals_SeparationIsHeldBothWays`, `TestVerifyApprovals_TheExcludedSetMustMatchTheTallys` (an unseparated gate fails under a policy that separates) |
 
 Also not modelled: the decision-key parsers and consumers (A2, A4), Conform's replay (A3), and part B's
-static analysis. The instance has no early decisions (a decision recorded before its request), so the
-decision-after-request ordering for the instance is left to the Go pull request that adds the instance
-(3c), as is every other Go-side property of the key parsers.
+static analysis (built for bide check; a Go matter). The instance has no early decisions (a decision recorded before its request), so the
+decision-after-request ordering for the instance is covered by the Go tests of the instance
+(3c, built), as is every other Go-side property of the key parsers.
 
 <!-- modelsync: map flows -->
 | Label | Go |

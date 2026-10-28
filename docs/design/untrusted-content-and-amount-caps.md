@@ -198,11 +198,11 @@ The `taint_policy_digest` is written only for a run that started under a policy,
 v0.23.0 does not taint or cap plan flow nodes. A flow node has no model turn to attach taint to, and its gate path is separate (`ApprovalRequest`, key `node:<name>`). Specifying taint for a flow rigorously needs a rule for what a node has "read" (node order, or data edges) and a place for the escalation gate in the flow's digest and topology; neither is specified here, and a half-specified rule is worse than none. What this leaves:
 
 - a flow node that wraps an agent run (a model call inside the flow) gets taint and caps for that agent's own tool calls, as any agent run does;
-- a flow node that is itself a side-effecting tool call is not taint-gated and not capped, whatever its inputs came from. The flow's own approval gates (`approval:` on a node) are the control, as today;
+- a flow node that is itself a side-effecting tool call is not taint-gated (taint: see flow-taint.md) and not capped, whatever its inputs came from. The flow's own approval gates (`approval:` on a node) are the control, as today;
 - the flow YAML has no `caps:` or taint keys in v0.23.0;
 - a tool that carries caps cannot be a flow block: `plan.Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` (a node's gate path is separate from `effectiveGates`, so the cap would otherwise be lost silently), and the flows guide says so.
 
-Decision 18 asks whether to specify flows for a later release; the recommendation is a separate note, which is now written for taint: [taint in plan flows](flow-taint.md) (proposed; not implemented; caps for flows stay out of scope). The statements of this section stay true until that note is built.
+Decision 18 asks whether to specify flows for a later release; the recommendation is a separate note, which is now written and built for taint: [taint in plan flows](flow-taint.md) (caps for flows stay out of scope). The statements of this section describe v0.23.0 and hold for caps; for taint see that note.
 
 ## 6. First-class amount caps
 
