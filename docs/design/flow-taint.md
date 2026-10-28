@@ -1,8 +1,8 @@
 # Design: taint in plan flows, and its view in the flow editor
 
 Status: Part A is built (the run-time rule, the declarations in `run:start`, Conform, nested flows, the sink for
-taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B (the view in `bide check` and the
-editor) is in progress. This text was written before the
+taint coming up and the disjoint-approvers option `SeparateApprovers`); Part B is built for `bide check` and `bide check -diff` (the static view,
+`ConfigReport.Taint`); the editor half is in progress. This text was written before the
 code and keeps its original wording where the code follows it; "today" in section 0 means `main` at the commit
 named below. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
@@ -21,7 +21,7 @@ the adversarial-review gate. Part B is the view on top of it: the static analysi
 
 ## 0. What the code does today
 
-Plan flows have no taint rule at all today, so there is nothing yet for a static view to show. A view of
+Plan flows had no taint rule at all when this was written, so there is nothing yet for a static view to show. A view of
 "which steps may read untrusted input, and which approval gates that would trigger" (as `bide view` shows for
 agent runs) assumes a flow-level semantics that does not exist in the engine, the config, or the registry.
 Showing "escalates" for a flow node would be a claim about behaviour the runtime does not have.
@@ -65,7 +65,7 @@ So the editor feature needs flow taint at run time first (Part A), then the view
 
 ## Part A. Taint in plan flows at run time (the safety-relevant part)
 
-The ROADMAP's "plan flows, which a taint policy and caps do not cover" holds in the code (section 0). Part B
+The ROADMAP's "plan flows, which a taint policy and caps do not cover" held in the code when this was written (section 0). Part B
 is sound only if it shows what this part enforces.
 
 ### A1. What is declared where
@@ -358,7 +358,7 @@ run ungated, which fails open where an agent child fails closed). What the chose
   (its tools' declarations are in the `Agent`), so it records `subagent:<node name>`: an approximation that
   over-taints and fails closed, on that path only. The child link (`taint-child:`) carries the run's kind,
   `flow` or `agent`; an agent keeps its own store (no shared-journal rule for it). A flow with no policy
-  with no policy records the sources its nodes declare in `run:start` (`ext.taint_sources`: node name to sorted
+  records the sources its nodes declare in `run:start` (`ext.taint_sources`: node name to sorted
   sources; nothing is recorded when no node declares one, so a flow that declares nothing starts as it did; user
   decision of 2026-10-27). They gate nothing; they are what the run's own marks are counted from, so a flow with no
   policy run as a tool, or as a child of a node, brings up what it read. A drive by a flow that declares other
