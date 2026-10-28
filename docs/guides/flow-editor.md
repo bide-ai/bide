@@ -559,15 +559,17 @@ check](plan-flows.md#taint-in-a-check)): which declared sources of untrusted con
 and what the flow's taint policy would do to a node that can have a side effect. It is computed in Go from the
 text on the page; the page only draws it.
 
-- **Under each node** are words ("reads untrusted: inbound-email", "escalates: reads inbound-email", "refused",
-  "exempt", "source: inbound-email") and a ring inside its box whose pattern tells the states apart without color
+- **Under each node** are words ("reads untrusted: inbound-email", "escalates: reads inbound-email", "refused: reads
+  inbound-email", "exempt: reads inbound-email", "source: inbound-email"; the drawing clips a line to 34 characters, and the
+  outline, the inspector and the accessible name hold the whole text) and a ring inside its box whose pattern tells the states apart without color
   (dotted, solid, dash-dot, long dashes, thin). The same words are in the node's accessible name and in its
   button in the outline.
 - **The inspector** has a Taint section for the selected node: the verdict, the sources it may read, the path from
   a source ("fetch > triage > refund", or "earlier in the flow's order" when no edge leads from the source),
   the sources it declares, its exemption, what the view cannot know, and a note that this is a may-view.
-- **The Taint panel** lists the side-effecting nodes that may read untrusted data and the ones whose escalation is
-  not known because the policy is not given, each a button that selects the node; a skip link reaches it. A change
+- **The Taint panel** has the headline, the count of nodes for each verdict, the side-effecting nodes that may read
+  untrusted data, the ones among them whose escalation is not known because the policy is not given, the nodes that
+  declare a source, and what the view cannot know; each node is a button that selects it, and a skip link reaches the panel. A change
   in what the page says is announced ("Taint changed: ...").
 - **The banner** `UNTRUSTED EXPOSURE WIDENED` appears, with the weakened banners, when an edit makes a node that can
   have a side effect newly read untrusted data while the policy is known to be absent, or removes a source; when
@@ -575,10 +577,11 @@ text on the page; the page only draws it.
   When the taint cannot be compared the save is NOT CERTIFIED, as for any comparison that cannot be made.
 
 It is exact only where the program's declarations are known: a structural editor says "taint: not known without
--blocks" once and gives no verdict on any node (it shows only a source the config itself states with `untrusted:`),
+-blocks" (in the panel, and in the inspector of each node) and gives no verdict on any node (it shows only a source the config itself states with `untrusted:`),
 and a description from before version 2 says it carries no taint declarations. The embedded editor knows a Registry
 but a Registry holds no flow policy, so give it with `flowedit.WithTaintPolicy(policy)` (the zero
-`agent.TaintPolicy` states that there is none); without it a node that reads untrusted data is "reads untrusted"
+`agent.TaintPolicy` states that there is none; the option also overrides the `taint_policy` of a description given
+with `flowedit.WithBlocks`); without it a node that reads untrusted data is "reads untrusted"
 with the reason "taint policy not given", never "escalates". `bide edit -blocks` uses the description's
 `taint_policy`. No state is ever worded as safe: "no declared source before it" means only that, and the view cannot
 see an undeclared source, a run whose input is declared untrusted, or the taint of an agent or nested flow a block
