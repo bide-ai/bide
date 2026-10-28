@@ -18,10 +18,10 @@ import (
 	"github.com/bide-ai/bide/plan"
 )
 
-// verify-approvals -separate-from checks the escalation instance of a node under a taint policy that separates
+// verify-approvals -separate-approvers checks the escalation instance of a node under a taint policy that separates
 // approvers: the approver the node's own gate counted does not count on the instance, and it fails without the flag
 // (the gate enforced another rule than the policy it is given).
-func TestCLI_VerifyApprovalsSeparateFrom(t *testing.T) {
+func TestCLI_VerifyApprovalsSeparateApprovers(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	_, logPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -97,16 +97,22 @@ func TestCLI_VerifyApprovalsSeparateFrom(t *testing.T) {
 	writeJSON(t, keys, map[string]string{"alice": keyText(signers["alice"]), "bob": keyText(signers["bob"]), "carol": keyText(signers["carol"])})
 	base := []string{"verify-approvals", "-evidence", evidence, "-pubkey", keyText(logSigner), "-call", inst, "-need", "1", "-approvers", "alice,carol", "-approver-keys", keys}
 
-	code, stdout, stderr := runCLI(append(base, "-separate-from", "node:pay")...)
+	code, stdout, stderr := runCLI(append(base, "-separate-approvers")...)
 	if code != 0 {
-		t.Fatalf("verify-approvals -separate-from: exit %d, want 0\n%s%s", code, stdout, stderr)
+		t.Fatalf("verify-approvals -separate-approvers: exit %d, want 0\n%s%s", code, stdout, stderr)
 	}
 	for _, want := range []string{"ignored alice: " + agent.ReasonSibling, "PASS  carol approved"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout)
 		}
 	}
+	// A call that is not an escalation instance has no own gate to separate from.
+	notInstance := append([]string(nil), base...)
+	notInstance[6] = "node:pay"
+	if code, _, stderr := runCLI(append(notInstance, "-separate-approvers")...); code != 2 || !strings.Contains(stderr, "escalation instance") {
+		t.Errorf("-separate-approvers on a call that is not an instance: exit %d, want 2 naming the instance\n%s", code, stderr)
+	}
 	if code, stdout, stderr := runCLI(base...); code != 1 || !strings.Contains(stdout, "excluded_by_sibling") {
-		t.Fatalf("verify-approvals without -separate-from: exit %d, want 1 naming the exclusion\n%s%s", code, stdout, stderr)
+		t.Fatalf("verify-approvals without -separate-approvers: exit %d, want 1 naming the exclusion\n%s%s", code, stdout, stderr)
 	}
 }

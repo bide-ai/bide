@@ -52,8 +52,8 @@ func TestApprovalPolicy_ACopyKeepsItsSibling(t *testing.T) {
 	if c := p.Clone(); c.sibling != "c1" {
 		t.Errorf("Clone dropped the sibling: %q", c.sibling)
 	}
-	if v := sepGate(1, "a").SeparatedFrom("c1"); v.SeparatedFromSubject() != "c1" {
-		t.Errorf("SeparatedFrom: %q", v.SeparatedFromSubject())
+	if v := sepGate(1, "a").SeparatedFrom("c1"); v.sibling != "c1" || v.Need != 1 {
+		t.Errorf("SeparatedFrom: %+v", v)
 	}
 	if sepGate(1, "a").Clone().sibling != "" {
 		t.Error("a plain policy has a sibling")

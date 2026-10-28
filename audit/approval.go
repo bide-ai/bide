@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -585,7 +586,13 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	// must prove the own gate's terminal tally, under the same head and run, before this one; the recount reads
 	// who it counted from it, as the gate did. Without it the recount counts no one.
 	counted := append(start, decisions...)
-	switch own := policy.SeparatedFromSubject(); {
+	// The own gate is the call's or node's the instance belongs to; whether the policy separates approvers is
+	// what agent.ApprovalPolicy.SeparatedFrom marks (the subject it was given is not read back).
+	own := ""
+	if base, isInstance := escalation.Base(toolUseID); isInstance && separates(policy) {
+		own = base
+	}
+	switch {
 	case own == "" && len(tally.ExcludedBySibling) > 0:
 		problem("the gate excluded %v as counted on the call's own gate (excluded_by_sibling), but the expected policy does not separate approvers", tally.ExcludedBySibling)
 	case own != "":
@@ -653,4 +660,10 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 
 func sameTreeHead(a, b SignedTreeHead) bool {
 	return a.Size == b.Size && bytes.Equal(a.Root, b.Root) && bytes.Equal(a.Signature, b.Signature)
+}
+
+// separates reports whether policy was marked with agent.ApprovalPolicy.SeparatedFrom: a copy of it taken apart from
+// no gate is not the policy itself exactly when it was.
+func separates(policy agent.ApprovalPolicy) bool {
+	return !reflect.DeepEqual(policy, policy.SeparatedFrom(""))
 }

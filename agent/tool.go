@@ -335,10 +335,6 @@ func (p ApprovalPolicy) SeparatedFrom(own string) ApprovalPolicy {
 	return p
 }
 
-// SeparatedFromSubject is the subject of the own gate p is kept apart from (SeparatedFrom), "" for none.
-// Experimental.
-func (p ApprovalPolicy) SeparatedFromSubject() string { return p.sibling }
-
 // separatedFrom returns a copy of p that excludes the approvers the terminal tally of the gate on subject own
 // counted (see sibling). A nil p stays nil.
 func (p *ApprovalPolicy) separatedFrom(own string) *ApprovalPolicy {
