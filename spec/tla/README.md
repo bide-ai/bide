@@ -801,7 +801,7 @@ resolution all run around it.
 |---|---|
 | `ApGate` | `Agent.runLoop`'s pre-pass: `decided`/`approvals` and `values` from the Load, then `t.Safety()` |
 | `QTally` | `Agent.quorumTally`: `ApprovalPolicy.Validate` and the key check, `History`, the requester check (`checkRequester`), a recorded `ApprovalTallyStep` |
-| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedPrincipal`, `ReasonRequester`, `ReasonNoRequester`) |
+| `QCount` | `TallyApprovals` with the resolver as it is now: shared and keyless seats excluded (`ReasonSharedKey`, `ReasonNoKeyID`), and the requester under `ExcludePrincipal` (`RecordedPrincipal`, `ReasonRequester`, `ReasonNoRequester`); on an escalation instance whose policy separates approvers, also the approvers the call's own gate counted (`ReasonSibling`; modelled in flows, not here) |
 | `QRecord` | `quorumTally`'s `step` recording the tally (retry-safe, first writer wins), or, over a tally the policy supersedes, the separation-of-duties re-tally (`ApprovalSoDRetallyStep`) |
 | `QDecide` | `tallyGateOnce` after the write: the gate goes by the record the journal holds, and counts again when it is one the policy supersedes (another drive's weaker tally landed first) |
 | `Deny` | the pre-pass's `Journal.put` of the denied result (`ExpiredResult` for an expiry) |
@@ -3032,7 +3032,7 @@ through `TallyApprovals` comes with that code.
 | `Count` | `audit.CertIdentity.VerifyChain` (chain, identifier, window, `anchorGrace`: rules 1 to 3) and `EvaluateStatus` with `evalCert` (rule 5: the status rule, usable only for `[A(d), L(C)]`, no `E <= A(d)`); `CertApprover.VerifyCertDecision` (with `provableAt`, the covering head and the non-decreasing head-time rule: `A(d)`) joins them for the certificate-bound approver, and `agent.TallyApprovals` calls it; `audit.TestModel15Refinement` runs each counterexample configuration's scenario through them and compares the counted set. Go's count is stateless (every evaluation recounts every decision against the current journal, heads and status), so the model's tally recheck and dead set map to that recount, not to separate Go state |
 | `FinalWit` | `evalCert`'s tier, with `coveredFrom` and the series rule (`L(C)`, `CAPeriod`, consecutive numbers) |
 | `CrlCovers` | `crlView.covers` with `certNamesPoint` and `parseIDP` (`audit/identity_idp.go`): a CRL with an issuing distribution point is evidence of absence only for a certificate whose own CRL distribution points name its URI; `evalCert` reads listings from every CRL and absence only from the covering ones |
-| `Tally` | `agent.TallyApprovals`: an approver's first valid record, distinct approvers, `need` seats |
+| `Tally` | `agent.TallyApprovals`: an approver's first valid record, distinct approvers, `need` seats; on an escalation instance whose policy separates approvers, also the approvers the call's own gate counted (`ReasonSibling`; modelled in flows, not here) |
 | `Anchor` | `AuditedStore.anchorIfGrown`: a write that grows the journal anchors once |
 | `GateAnchorStep` | `AuditedStore.Reanchor` (the gate calls it before tallying a cert-bound decision no head covers) |
 | `IssueCert`, `MisIssue`, `Revoke`, `CRLPublish`, `WithholdCRL`, `RollbackCRL`, `ClockTick`, `SkewHead`, `RevokeCA`, `RootCRL`, `WithholdRootCRL` | the CA, the root, the clock and the adversary: no Go code |
