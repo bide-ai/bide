@@ -3,7 +3,7 @@ module github.com/bide-ai/bide/store/sqlite
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.26.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -21,5 +21,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
