@@ -1011,3 +1011,41 @@ func (s *loadFailStore) Load(ctx context.Context, runID string, after int64) ite
 	}
 	return s.Store.Load(ctx, runID, after)
 }
+
+// ResolveHalt's fold counts a child that began outside taint and declares sources: the node that drove it halted
+// before the child's marks went up, and the operator's resolution brings them in.
+func TestFlowTaintSink_AResolveHaltFoldsAChildThatBeganOutsideTaintAndDeclaresASource(t *testing.T) {
+	ctx := context.Background()
+	ss := &sinkStore{Store: agent.NewMemStore()}
+	j := agenttest.MustJournal(ss)
+	c := policylessSource(t, "child", "feed", Approval(agent.SingleApproval()))
+	if _, err := c.Run(ctx, j, "c1", 1); !isPendingAt(err, "node:fetch") {
+		t.Fatalf("the child's first drive: %v", err)
+	}
+	if err := agent.Approve(ctx, j, "c1", "node:fetch", true); err != nil {
+		t.Fatal(err)
+	}
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), true, func(ctx context.Context) error {
+		_, err := c.Run(ctx, j, "c1", 1)
+		return err
+	})
+	ss.fail(func(name string) bool { return strings.HasPrefix(name, "taint-mark:") })
+	if _, err := p.Run(ctx, j, "p1", 1); err == nil {
+		t.Fatal("the first drive did not fail")
+	}
+	_, err := p.Run(ctx, j, "p1", 1)
+	halt, ok := errors.AsType[*agent.OutcomeUnknown](err)
+	if !ok {
+		t.Fatalf("the second drive: %v, want a halt", err)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); len(got) != 0 {
+		t.Fatalf("the parent holds %v before the resolution", got)
+	}
+	if err := p.ResolveHalt(ctx, j, halt.Ref(), agent.Outcome{Result: 5}, agent.WithoutLiveDriverCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"feed"}) {
+		t.Errorf("after the resolution the parent holds %v, want [feed]", got)
+	}
+}
