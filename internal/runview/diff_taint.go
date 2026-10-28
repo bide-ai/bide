@@ -2,9 +2,11 @@ package runview
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/taintwords"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -26,6 +28,7 @@ func exposureChanges(o, n plan.ConfigReport, renRev map[string]string) (cs []Cha
 	if len(o.Taint) == 0 || len(n.Taint) == 0 {
 		return nil, nil
 	}
+	sameKnowledge := taintKnown(o) == taintKnown(n)
 	for _, x := range n.Topology.Nodes {
 		from := x.Name
 		if f, ok := renRev[x.Name]; ok {
@@ -36,7 +39,9 @@ func exposureChanges(o, n plan.ConfigReport, renRev map[string]string) (cs []Cha
 			continue
 		}
 		ot, had := o.Taint[from]
-		if had {
+		// A side that does not know its blocks states only what the config's keys say: its sources are not
+		// compared with those of a side that knows them (taintBasis says the pair cannot be compared).
+		if had && sameKnowledge {
 			// A source the node declared is gone, or a new one is declared: the sources are what the nodes
 			// after it read.
 			for _, s := range ot.Declares {
@@ -49,7 +54,7 @@ func exposureChanges(o, n plan.ConfigReport, renRev map[string]string) (cs []Cha
 					cs = append(cs, taintChange(x.Name, "strengthened", "now declares source "+s))
 				}
 			}
-		} else {
+		} else if sameKnowledge {
 			for _, s := range nt.Declares {
 				cs = append(cs, taintChange(x.Name, "strengthened", "now declares source "+s))
 			}
@@ -82,6 +87,9 @@ func exposureChanges(o, n plan.ConfigReport, renRev map[string]string) (cs []Cha
 				uncomparable = append(uncomparable, x.Name)
 				cs = append(cs, taintChange(x.Name, "", reads+"; "+nt.Reason))
 			}
+		case had && wasEffect && level == covered && coverOf(ot) == covered && coveredText(ot) != coveredText(nt):
+			// Still covered, but not as it was: a gate turned into an exemption, or a refusal into a gate.
+			cs = append(cs, taintChange(x.Name, "", "reads "+strings.Join(nt.Sources, ", ")+", "+coveredText(nt)+", was "+coveredText(ot)))
 		case had && wasEffect && coverOf(ot) == covered && level != covered:
 			// It read these sources before, covered, and the policy no longer covers it.
 			if level == uncovered {
@@ -108,7 +116,7 @@ func coverOf(t plan.NodeTaint) int {
 	switch {
 	case t.Verdict == "escalates" || t.Verdict == "refused" || t.Verdict == "exempt":
 		return covered
-	case strings.HasPrefix(t.Reason, "no taint policy"):
+	case strings.HasPrefix(t.Reason, taintwords.NoPolicy):
 		return uncovered
 	}
 	return notComparable
@@ -140,4 +148,50 @@ func taintChange(node, gate, what string) Change {
 // uncomparableNote is the not-certified text for exposure that could not be compared.
 func uncomparableNote(nodes []string) string {
 	return "not certified: taint could not be compared: the flow's taint policy is not given for " + strings.Join(nodes, ", ") + ", which now read untrusted data (check against a Registry or description that gives it)"
+}
+
+// taintKnown reports whether r's declarations are known: some node has a verdict other than "unknown".
+func taintKnown(r plan.ConfigReport) bool {
+	return slices.ContainsFunc(slices.Collect(maps.Values(r.Taint)), func(t plan.NodeTaint) bool { return t.Verdict != "unknown" })
+}
+
+// taintStated reports whether r says anything about a source: some node declares one or may read one.
+func taintStated(r plan.ConfigReport) bool {
+	return slices.ContainsFunc(slices.Collect(maps.Values(r.Taint)), func(t plan.NodeTaint) bool { return len(t.Declares) > 0 || len(t.Sources) > 0 })
+}
+
+// taintBasis says, for a diff of two reports that do not both know their taint, what could not be compared.
+// note is an informational line (neither side knows: the diff's certification is unchanged); unsure is set when
+// one side knows and says something about a source the other cannot show, so the diff cannot be certified.
+// knownSide is "old" or "new" for a mixed pair, and sideOnly marks sides that were made structural to be compared
+// (a Registry or description for one side only), where the report that knew is passed as stated.
+func taintBasis(o, n plan.ConfigReport, sideOnly, stated bool) (note, unsure string) {
+	if len(o.Taint) == 0 || len(n.Taint) == 0 {
+		return "", ""
+	}
+	ok, nk := taintKnown(o), taintKnown(n)
+	switch {
+	case sideOnly:
+		if stated {
+			return "", "taint could not be compared: the blocks are known on only one side, so what they declare as sources is not compared"
+		}
+		return "taint not compared (no -blocks on one side)", ""
+	case !ok && !nk:
+		for _, t := range n.Taint {
+			if strings.Contains(t.Reason, "version 1") {
+				return "taint not compared (the description does not carry taint declarations)", ""
+			}
+			break
+		}
+		return "taint not compared (no -blocks)", ""
+	case ok != nk:
+		known, side := o, "old"
+		if nk {
+			known, side = n, "new"
+		}
+		if taintStated(known) {
+			return "", "taint could not be compared: the " + side + " side's blocks declare taint and the other side's do not carry it"
+		}
+	}
+	return "", ""
 }

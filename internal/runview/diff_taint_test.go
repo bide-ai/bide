@@ -166,8 +166,14 @@ func TestDiffTaint_APolicyThatNoLongerCoversANode(t *testing.T) {
 	if v := finishDiff(gone, withPay(plan.NodeTaint{Verdict: reads, Reason: noneReason})); len(v.Changes) != 0 {
 		t.Errorf("none to none: %v", v.Changes)
 	}
-	if v := finishDiff(withPay(plan.NodeTaint{Verdict: "refused"}), covered); len(v.Changes) != 0 || v.Fallback != "" {
-		t.Errorf("refused to escalates: %v", v.Changes)
+	// Still covered, but not as it was: listed, not weakened.
+	v = finishDiff(withPay(plan.NodeTaint{Verdict: "refused"}), covered)
+	if all := taintLines(v); !strings.Contains(all, "reads inbound-email, escalates, was refused") || len(v.Weakened) != 0 || v.Fallback != "" {
+		t.Errorf("refused to escalates: %q weakened %v", all, v.Weakened)
+	}
+	v = finishDiff(covered, withPay(plan.NodeTaint{Verdict: exempt, Exempt: "fixed"}))
+	if all := taintLines(v); !strings.Contains(all, "reads inbound-email, exempt (fixed), was escalates") || len(v.Weakened) != 0 {
+		t.Errorf("escalates to exempt: %q weakened %v", all, v.Weakened)
 	}
 }
 
@@ -236,20 +242,75 @@ func TestDiffTaint_RenamesAndUnknown(t *testing.T) {
 	}
 }
 
-// Nothing is compared with a side that has no taint, or whose taint is unknown.
-func TestDiffTaint_NothingIsComparedWithASideThatDoesNotKnow(t *testing.T) {
-	uncoveredNew := withPay(plan.NodeTaint{Verdict: reads, Reason: noneReason})
-	// The old side has no taint at all (a report with errors).
+// Nothing is compared with a side that has no taint at all (a report with errors).
+func TestDiffTaint_ASideWithNoTaintIsLeftAlone(t *testing.T) {
 	noTaint := oldFlow()
 	noTaint.Taint = nil
-	if v := finishDiff(noTaint, uncoveredNew); len(v.Changes) != 0 || len(v.Weakened) != 0 || v.Fallback != "" {
-		t.Errorf("old side with no taint: %v %v %q", v.Changes, v.Weakened, v.Fallback)
+	v := finishDiff(noTaint, withPay(plan.NodeTaint{Verdict: reads, Reason: noneReason}))
+	if len(v.Changes) != 0 || len(v.Weakened) != 0 || v.Fallback != "" || v.TaintNote != "" {
+		t.Errorf("old side with no taint: %v %v %q %q", v.Changes, v.Weakened, v.Fallback, v.TaintNote)
 	}
-	// The old side is structural: every node unknown.
-	unk := plan.NodeTaint{Verdict: "unknown", Reason: "blocks not known: check with -blocks or a Registry"}
-	structural := taintReport(map[string]plan.NodeTaint{"src": unk, "pay": unk, "look": unk}, effect, "src", "pay", "look")
-	if v := finishDiff(structural, uncoveredNew); len(v.Weakened) != 0 || v.Fallback != "" {
-		t.Errorf("old side unknown: %v %q", v.Weakened, v.Fallback)
+}
+
+func unknownFlow(declares map[string][]string) plan.ConfigReport {
+	unk := func(n string) plan.NodeTaint {
+		return plan.NodeTaint{Verdict: "unknown", Declares: declares[n], Reason: "blocks not known: check with -blocks or a Registry"}
+	}
+	return taintReport(map[string]plan.NodeTaint{"src": unk("src"), "pay": unk("pay"), "look": unk("look")}, effect, "src", "pay", "look")
+}
+
+// One side knows its taint and the other cannot: the diff cannot be certified, and says why.
+func TestDiffTaint_OneSideKnowsAndTheOtherDoesNot(t *testing.T) {
+	known := withPay(plan.NodeTaint{Verdict: escal})
+	for name, c := range map[string]struct{ o, n plan.ConfigReport }{
+		"old unknown": {unknownFlow(nil), known},
+		"new unknown": {known, unknownFlow(nil)},
+	} {
+		v := finishDiff(c.o, c.n)
+		if !strings.Contains(v.Fallback, "taint could not be compared") || v.Verdict.Word != "NOT CERTIFIED" || len(v.Weakened) != 0 || v.TaintNote != "" {
+			t.Errorf("%s: fallback %q verdict %q weakened %v note %q", name, v.Fallback, v.Verdict.Word, v.Weakened, v.TaintNote)
+		}
+	}
+	// The side that knows says nothing about a source: there is nothing the other cannot show.
+	quiet := taintReport(map[string]plan.NodeTaint{"src": nt(noSrc, nil, nil), "pay": nt(noSrc, nil, nil), "look": nt(noSrc, nil, nil)}, effect, "src", "pay", "look")
+	if v := finishDiff(unknownFlow(nil), quiet); v.Fallback != "" {
+		t.Errorf("a quiet side: %q", v.Fallback)
+	}
+	// Sides made structural to be compared (a Registry or description for one side only).
+	for stated, want := range map[bool]string{true: "taint could not be compared", false: ""} {
+		v := &DiffView{sideOnly: true, sideStated: stated}
+		v.finish(unknownFlow(nil), unknownFlow(nil), nil, nil)
+		if stated && !strings.Contains(v.Fallback, want) || !stated && v.Fallback != "" || stated != (v.TaintNote == "") || !stated && !strings.Contains(v.TaintNote, "one side") {
+			t.Errorf("side only, stated %v: fallback %q note %q", stated, v.Fallback, v.TaintNote)
+		}
+	}
+}
+
+// Neither side knows (no -blocks): an informational line, and the certification is unchanged.
+func TestDiffTaint_NeitherSideKnowsIsAnInformationalLine(t *testing.T) {
+	v := finishDiff(unknownFlow(nil), unknownFlow(map[string][]string{"src": {"crm"}}))
+	if v.TaintNote != "taint not compared (no -blocks)" || v.Fallback != "" || v.Verdict.Word == "NOT CERTIFIED" {
+		t.Errorf("note %q fallback %q verdict %q", v.TaintNote, v.Fallback, v.Verdict.Word)
+	}
+	// A config key a side newly states is still a listed change (that part is structural).
+	if all := taintLines(v); !strings.Contains(all, "now declares source crm") {
+		t.Errorf("changes:\n%s", all)
+	}
+	// Descriptions without the declarations say why.
+	v1 := unknownFlow(nil)
+	for k, t := range v1.Taint {
+		t.Reason = "the description does not carry taint declarations (version 1)"
+		v1.Taint[k] = t
+	}
+	if v := finishDiff(v1, v1); !strings.Contains(v.TaintNote, "does not carry taint declarations") {
+		t.Errorf("version 1: %q", v.TaintNote)
+	}
+	// Through the real text diff: certification is unchanged and the line is printed, with exit status 0.
+	cfg := []byte(`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"}],"wiring":[{"edge":["a","b"]}]}`)
+	var out strings.Builder
+	weakened, err := CheckDiff(&out, Diff{Old: Config{Name: "old.json", Data: cfg}, New: Config{Name: "new.json", Data: cfg}})
+	if err != nil || weakened || !strings.Contains(out.String(), "new.json: taint not compared (no -blocks)") {
+		t.Errorf("CheckDiff: weakened %v err %v\n%s", weakened, err, out.String())
 	}
 }
 
@@ -263,5 +324,14 @@ func TestDiffTaint_ANewNodeThatDeclaresASource(t *testing.T) {
 	v := finishDiff(oldFlow(), n)
 	if all := taintLines(v); !strings.Contains(all, "changed node feed: taint: now declares source rss (strengthened)") {
 		t.Errorf("changes:\n%s", all)
+	}
+}
+
+// A diff that is already not certified (a side has errors) adds no informational line about the taint.
+func TestDiffTaint_NoNoteBesideAFallback(t *testing.T) {
+	v := &DiffView{Fallback: "not certified: the new config has 1 error against the plan.Registry"}
+	v.finish(unknownFlow(nil), unknownFlow(nil), nil, nil)
+	if v.TaintNote != "" || !strings.HasPrefix(v.Fallback, "not certified: the new config") {
+		t.Errorf("note %q fallback %q", v.TaintNote, v.Fallback)
 	}
 }

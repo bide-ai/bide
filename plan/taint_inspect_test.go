@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/taintwords"
 )
 
 // The static taint verdicts (taint_inspect.go) on small flows of int steps. Every block is a Step; the
@@ -98,7 +99,7 @@ func TestTaintInspect_Chain(t *testing.T) {
 	if got := r.Taint["pay"]; !reflect.DeepEqual(got.Sources, []string{"inbound-email"}) || !reflect.DeepEqual(got.Path, []string{"src", "mid", "pay"}) {
 		t.Errorf("pay: %+v", got)
 	}
-	if got := r.Taint["src"]; !reflect.DeepEqual(got.Declares, []string{"inbound-email"}) || len(got.Sources) != 0 || got.Reason != taintCaveatNoSource {
+	if got := r.Taint["src"]; !reflect.DeepEqual(got.Declares, []string{"inbound-email"}) || len(got.Sources) != 0 || got.Reason != taintwords.SelfSource+"; "+taintCaveatNoSource {
 		t.Errorf("src: %+v", got)
 	}
 }
@@ -268,5 +269,18 @@ func TestTaintInspect_NoClaimWords(t *testing.T) {
 				t.Errorf("%q says %q", v, w)
 			}
 		}
+	}
+}
+
+// A node that is a source and can have a side effect says its own read is not gated; a read-only source does not.
+func TestTaintInspect_ASourceThatCanHaveASideEffect(t *testing.T) {
+	cfg := cfgOf("a", []string{"a", "b"}, wEdge("a", "b"))
+	r := inspectTaint(t, cfg, tn{"a": {Untrusted("x")}, "b": {Untrusted("y"), ReadOnly()}}, InspectTaintPolicy(gatePol))
+	if got := r.Taint["a"]; got.Verdict != taintVerdictNoSource || !strings.HasPrefix(got.Reason, taintwords.SelfSource) {
+		t.Errorf("a: %+v", got)
+	}
+	r = inspectTaint(t, cfg, tn{"a": {Untrusted("x"), ReadOnly()}, "b": {ReadOnly()}}, InspectTaintPolicy(gatePol))
+	if got := r.Taint["a"]; got.Reason != taintCaveatNoSource {
+		t.Errorf("a read-only source: %+v", got)
 	}
 }

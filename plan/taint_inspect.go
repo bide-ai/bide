@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/taintwords"
 )
 
 // The static view of flow taint (docs/design/flow-taint.md, section 1): the may-version of the rule the
@@ -23,12 +24,12 @@ const (
 
 // Reasons that say what the verdict cannot know.
 const (
-	taintCaveatNoSource = "unless the run declares its input untrusted, or a block runs an agent or a nested flow, whose taint this view cannot see"
-	taintReasonNoPolicy = "taint policy not given: whether it escalates is not known"
+	taintCaveatNoSource = taintwords.Caveat
+	taintReasonNoPolicy = taintwords.NotGiven + ": whether it escalates is not known"
 	// taintReasonNone is the reason of a node under a policy that is known to be absent
-	// (InspectTaintPolicy with the zero agent.TaintPolicy). Readers tell it from taintReasonNoPolicy by these
-	// two prefixes.
-	taintReasonNone   = "no taint policy: nothing gates its side effect"
+	// (InspectTaintPolicy with the zero agent.TaintPolicy). Readers tell it from taintReasonNoPolicy by the
+	// prefixes in internal/taintwords.
+	taintReasonNone   = taintwords.NoPolicy + ": nothing gates its side effect"
 	taintReasonBlocks = "blocks not known: check with -blocks or a Registry"
 	taintReasonV1     = "the description does not carry taint declarations (version 1)"
 )
@@ -150,6 +151,11 @@ func (c *builderCore) taintReport(policy *agent.TaintPolicy) (map[string]NodeTai
 		switch {
 		case len(t.Sources) == 0:
 			t.Verdict, t.Reason = taintVerdictNoSource, taintCaveatNoSource
+			if len(t.Declares) > 0 && tracked {
+				// The node is a source that can have a side effect: it runs ungated for its own read, as an agent's
+				// tool does in the turn that reads.
+				t.Reason = taintwords.SelfSource + "; " + taintCaveatNoSource
+			}
 		case !tracked:
 			t.Verdict = taintVerdictReads
 		case n.taint.exempt != "":

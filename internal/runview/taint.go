@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/taintwords"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
@@ -109,8 +110,8 @@ func taintNodeText(name string, t plan.NodeTaint) string {
 	if len(t.Declares) > 0 {
 		s += "; source: " + strings.Join(t.Declares, ", ")
 	}
-	if t.Reason != "" && t.Verdict != "no declared source before it" {
-		s += "; " + t.Reason
+	if r := strings.TrimSuffix(t.Reason, taintwords.Caveat); r != "" {
+		s += "; " + strings.TrimSuffix(r, "; ")
 	}
 	return s
 }

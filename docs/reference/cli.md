@@ -1317,6 +1317,13 @@ problem ("file:from->to: message" for an edge or arm). The check is structural: 
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
 
+It then prints a taint line, so output is no longer empty for a clean config; the exit status is unchanged. With
+-blocks (or a Registry) the line is a taint section: the nodes that may read a declared source of untrusted
+content, and what the flow's policy would do to them (escalates, refused, exempt, or "reads untrusted" when the
+policy is not given in the description: its "taint_policy"). Without them it is "taint: not known without
+-blocks". It is a may-view of the flow's order and cannot see an undeclared source, a run whose input is declared
+untrusted, or the taint of an agent or nested flow a block runs.
+
 With -blocks it also checks them, by name, against a description of the program's registered
 blocks (a program writes one with json.Marshal of plan.Registry.Describe): block, predicate and
 merge names, the types along every edge, safety, the approval gates the blocks declare in Go, and the
@@ -1351,7 +1358,13 @@ line removed, loosened, or kept and no longer holding (violated, undecided, or h
 (git's own form), or a bare <rev> for the config's own path at that revision (bide check
 flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
-removed or weakened, or another weakening named above. Flags may follow the file names.
+removed or weakened, or another weakening named above: a side-effecting node that newly reads untrusted data when
+the policy is known to be absent, or a node that no longer declares a source ("exposure"; the page says UNTRUSTED
+EXPOSURE WIDENED). A node that newly reads untrusted data under a policy that gates or refuses it, or when it is
+exempt, is listed as a change. When the taint of the two versions cannot be compared (the policy is not given, or
+only one side has -blocks or -old-blocks and it states a source) the diff is labelled not certified and
+-fail-on-weaken fails on it; when neither side has -blocks it prints "taint not compared (no -blocks)" and
+certification is unchanged. Flags may follow the file names.
 
 On a terminal the output is colored (a red cross on each error and its counterexample path in red,
 a green check on assertions that all hold); piped or redirected it is plain text. -color=never, or
@@ -1368,7 +1381,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
   -diff string
     	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
   -fail-on-weaken
-    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)
+    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, an exposure to untrusted data that nothing covers, a diff whose taint could not be compared, or an assert line removed, loosened, or kept and no longer holding)
   -old-blocks string
     	with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)
   -strict

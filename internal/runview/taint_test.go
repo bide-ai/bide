@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bide-ai/bide/internal/taintwords"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
 
 func TestTaintView_Known(t *testing.T) {
 	r := taintReport(map[string]plan.NodeTaint{
-		"src":  {Verdict: noSrc, Declares: []string{"inbound-email"}, Reason: "caveat"},
+		"src":  {Verdict: noSrc, Declares: []string{"inbound-email"}, Reason: taintwords.SelfSource + "; " + taintwords.Caveat},
 		"pay":  {Verdict: escal, Sources: []string{"inbound-email"}, Path: []string{"src", "pay"}},
 		"look": {Verdict: reads, Sources: []string{"inbound-email"}, Reason: "taint policy not given: whether it escalates is not known"},
 	}, effect, "src", "pay", "look")
@@ -28,7 +29,7 @@ func TestTaintView_Known(t *testing.T) {
 		texts = append(texts, n.Text)
 	}
 	want := []string{
-		"src: no declared source before it; source: inbound-email",
+		"src: no declared source before it; source: inbound-email; it is itself a source, and its own read is not gated; split the block",
 		"pay: escalates, reads inbound-email via src > pay",
 		"look: reads untrusted, reads inbound-email (earlier in the flow's order); taint policy not given: whether it escalates is not known",
 	}

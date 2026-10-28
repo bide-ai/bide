@@ -136,6 +136,12 @@ type DiffView struct {
 	Verdict Verdict `json:"-"`
 	// sideOnly is set when only one side had a Registry or description, so the comparison was structural.
 	sideOnly bool
+	// sideStated is set with sideOnly when the side that had them declared or read a source, which the
+	// structural comparison cannot show.
+	sideStated bool
+	// TaintNote is set when the taint of neither side is known (no -blocks, or descriptions without the
+	// declarations): an informational line, "taint not compared (no -blocks)". It changes no certification.
+	TaintNote string `json:"taint_note,omitempty"`
 	// weakKinds is the Weakening of each Weakened entry, in order.
 	weakKinds []string
 }
@@ -267,6 +273,7 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		// what its config states, and the classifier reads "unknown" against "known" as a lowering and
 		// as a gate that appeared, so an unchanged config would fail. Compare structurally, as without
 		// it; the labels say which side was described.
+		v.sideStated = taintStated(o) || taintStated(n)
 		o, n = Config{Name: d.Old.Name, Data: d.Old.Data}.inspect(), Config{Name: d.New.Name, Data: d.New.Data}.inspect()
 		v.Typed = false
 		v.sideOnly = true
@@ -292,6 +299,18 @@ func (v *DiffView) finish(o, n plan.ConfigReport, oldSafety, newSafety map[strin
 	}
 	tc, uncomparable := exposureChanges(o, n, renRev)
 	v.Changes = append(v.Changes, tc...)
+	note, unsure := taintBasis(o, n, v.sideOnly, v.sideStated)
+	if v.Fallback == "" {
+		v.TaintNote = note
+	}
+	if unsure != "" {
+		if v.Fallback != "" {
+			v.Fallback += "; "
+		} else {
+			v.Fallback = "not certified: "
+		}
+		v.Fallback += unsure
+	}
 	if len(uncomparable) > 0 {
 		note := uncomparableNote(uncomparable)
 		if v.Fallback != "" {
@@ -391,6 +410,9 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 	}
 	if l := v.BasisLine(); l != "" {
 		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(l))
+	}
+	if v.TaintNote != "" {
+		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(v.TaintNote))
 	}
 	return len(v.Weakened) > 0 || v.Fallback != "", nil
 }

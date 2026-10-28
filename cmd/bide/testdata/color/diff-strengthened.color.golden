@@ -6,3 +6,4 @@
 [2m../../examples/plan/flows/refund-v2.yaml[0m: [1m5 changes[0m from ../../examples/plan/flows/refund-v1.yaml
     [2mnodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed[0m
     [2mdigest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)[0m
+[2m../../examples/plan/flows/refund-v2.yaml[0m: [2mtaint not compared (no -blocks)[0m
