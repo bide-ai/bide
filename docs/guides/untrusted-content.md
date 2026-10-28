@@ -130,7 +130,9 @@ run and not asked; the model reads an error result.
   naming the tool and the shared IDs; a `SingleApproval` own gate, or a `SingleApproval` or `Refuse` policy, is
   `ErrConfig` with it set, since a single decision has no approver ID to keep apart. The own gate is never
   recounted because of the instance. It is in the declarations digest only when set, and `bide doctor -diff` reports
-  its removal as weakened. `bide audit verify-approvals -separate-from <own gate's subject>` (and
+  its removal as weakened. The approvals intake refuses a decision by an approver the own gate counted, `bide approve` refuses it and
+  lists them as unable to approve, the run viewer shows them excluded, and the notifier does not ask them.
+  `bide audit verify-approvals -separate-from <own gate's subject>` (and
   `audit.VerifyApprovals` with `ApprovalPolicy.SeparatedFrom`) recounts an instance with the same exclusion, from the
   own gate's tally that the evidence carries. It works on approver IDs, not people: two IDs of one person are not
   told apart, and in a certificate-bound gate the decider is the approver name, not the certificate's subject.

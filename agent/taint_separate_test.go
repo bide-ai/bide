@@ -420,3 +420,24 @@ func TestNotifier_LeavesOutTheApproversTheOwnGateCounted(t *testing.T) {
 }
 
 func jsonOf(v any) []byte { b, _ := json.Marshal(v); return b }
+
+// A drive that pauses at the escalation gate of a policy that separates approvers tells the notifier who is
+// excluded, though the policy does not exclude the requester, and routes no receiver for them.
+func TestNotifier_AnApprovalPendingNamesTheApproversExcludedBySibling(t *testing.T) {
+	e := testEngine(t, memJournal(), &fakeSink{}, NewMemNotifyTrail(), routeClock(), "p1",
+		WithNotifyReceiver("risk", &fakeSink{}), WithNotifyReceiver("finance", &fakeSink{}),
+		WithNotifyApproverRoute("alice", "risk"), WithNotifyApproverRoute("bob", "finance"))
+	q := &ApprovalTally{Need: 1, Approvers: []string{"alice", "bob"}, Excluded: []string{"alice"}, ExcludedBySibling: []string{"alice"}}
+	ev, ok := e.eventFromErr("r1", &ApprovalPending{RunRef: RunRef{RunID: "r1", RootRunID: "r1"}, ToolUseID: "c1#taint", ToolName: "pay", Quorum: q})
+	if !ok || strings.Join(ev.approval.Excluded, ",") != "alice" {
+		t.Fatalf("event %+v, %v; want alice excluded", ev.approval, ok)
+	}
+	if routed := e.routed(ev); len(routed) != 1 || routed[0].receiver != "finance" {
+		t.Errorf("routed to %d receivers (%v); want only finance", len(routed), routed)
+	}
+	// Without the exclusion by the sibling or the requester nothing is excluded.
+	q2 := &ApprovalTally{Need: 1, Approvers: []string{"alice", "bob"}}
+	if ev, _ := e.eventFromErr("r1", &ApprovalPending{RunRef: RunRef{RunID: "r1", RootRunID: "r1"}, ToolUseID: "c1#taint", ToolName: "pay", Quorum: q2}); len(ev.approval.Excluded) != 0 {
+		t.Errorf("excluded %v", ev.approval.Excluded)
+	}
+}

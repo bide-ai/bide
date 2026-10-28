@@ -490,3 +490,35 @@ func TestBuild_AnInstanceLeavesOutTheApproversTheOwnGateCounted(t *testing.T) {
 		}
 	}
 }
+
+// The approver the own gate counted as a denier is left out of the instance too, and a recorded tally's exclusion by
+// the sibling is shown as it is.
+func TestBuild_AnInstanceLeavesOutADenierOfTheOwnGateAndShowsARecordedExclusion(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "own1"}})
+	f.Esc = &agent.ApprovalPolicy{Need: 1, Approvers: []string{"esc1", "esc2"}}
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "esc1", false); err != nil { // esc1 denies; own1 approves, which passes the gate
+		t.Fatal(err)
+	}
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	sep := taintfixture.Separated(t, f.Journal, taintfixture.Run, "c2")
+	recs, _ := sep.History(ctx, taintfixture.Run)
+	for _, g := range Build(ctx, taintfixture.Run, recs, nil).Gates {
+		if g.ToolUseID == "c2#taint" && !slices.Equal(g.ExcludedBySibling, []string{"esc1"}) {
+			t.Errorf("a denier of the own gate: excluded by the sibling %v, want esc1", g.ExcludedBySibling)
+		}
+	}
+	// A tally the gate recorded with an exclusion by the sibling (as an engine that separated would): the view shows it.
+	tallied := append([]agent.Record(nil), recs...)
+	body, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"esc1", "esc2"}, Excluded: []string{"esc1"}, ExcludedBySibling: []string{"esc1"}, Approved: 1, ApprovedBy: []string{"esc2"}, DecisionFormat: agent.DecisionFormat})
+	tallied = append(tallied, agent.Record{Name: agent.ApprovalTallyStep("c2#taint"), Kind: agent.StepValue, Result: body})
+	for _, g := range Build(ctx, taintfixture.Run, tallied, nil).Gates {
+		if g.ToolUseID == "c2#taint" && (!g.Tallied || !slices.Equal(g.ExcludedBySibling, []string{"esc1"})) {
+			t.Errorf("a recorded tally: tallied %v, excluded by the sibling %v; want esc1", g.Tallied, g.ExcludedBySibling)
+		}
+	}
+}

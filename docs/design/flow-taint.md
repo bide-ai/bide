@@ -282,8 +282,12 @@ instance cannot count for the other (the signature binds the subject key, `stale
   records. A call whose own gate is a cap rule's is not separated (the cap gate is chosen per call, and the
   registration check cannot see it). Offline: the evidence of an instance carries the own gate's tally, and
   `ApprovalPolicy.SeparatedFrom(ownSubject)` with `audit.VerifyApprovals` (CLI: `-separate-from`) recounts with
-  the same exclusion; the viewer, `bide approve -list`, the approvals intake and the notifier do not show the
-  exclusion yet (the engine ignores an excluded approver's decision all the same).
+  the same exclusion. The readers of a journal learn that an instance is separated from the call's gate-reason
+  record (`separate_approvers`, set only for a call or node that has an own gate): `EvaluateGate` and
+  `TallyApprovals` count such an instance apart from the own gate; the approvals intake refuses an excluded
+  approver's decision (`excluded_by_sibling`, 403) instead of recording one the engine ignores; the viewer lists
+  them excluded with the reason; `bide approve` refuses them and `-list` names them; the notifier lists them in
+  `excluded` and routes no receiver for them (user decision of 2026-10-28).
 
 **Options a flow run takes.** `Flow.Run` takes `WithIdentity` through `journalhook.RunIdentity` today. It
 also takes `WithUntrustedInput` / `WithTrustedInput`, recorded in the start settings; a drive's option that
