@@ -281,7 +281,7 @@ instance cannot count for the other (the signature binds the subject key, `stale
   `excluded_by_sibling` field (who was excluded and why, self-describing evidence); the flag
   `bide audit verify-approvals -separate-approvers` (a boolean, the own gate derived from the instance in `-call`);
   and `separate_approvers` in the gate-reason record, which the readers of a journal use to tell a separated
-  instance (pending user approval: the other names are approved; this one is a journal-format field).
+  instance (a journal-format field, approved with the other names on 2026-10-28).
 - As built (3d): the field is `TaintPolicy.SeparateApprovers`; the instance's gate is a copy of the policy's Gate
   that remembers the own gate's subject (unexported, so in no digest or journaled form), and the count reads the
   own gate's terminal tally from the journal, excluding the approvers it counted (`excluded_by_sibling`, also in
