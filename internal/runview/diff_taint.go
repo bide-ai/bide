@@ -177,11 +177,8 @@ func taintBasis(o, n plan.ConfigReport, sideOnly, stated bool) (note, unsure str
 		}
 		return "taint not compared (no -blocks on one side)", ""
 	case !ok && !nk:
-		for _, t := range n.Taint {
-			if strings.Contains(t.Reason, "version 1") {
-				return "taint not compared (the description does not carry taint declarations)", ""
-			}
-			break
+		if slices.ContainsFunc(slices.Collect(maps.Values(n.Taint)), func(t plan.NodeTaint) bool { return strings.HasPrefix(t.Reason, taintwords.DescriptionV1) }) {
+			return "taint not compared (" + taintwords.DescriptionV1 + ")", ""
 		}
 		return "taint not compared (no -blocks)", ""
 	case ok != nk:

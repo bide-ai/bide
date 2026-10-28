@@ -110,3 +110,35 @@ func TestRealTaint_TheDiffFollowsThePolicy(t *testing.T) {
 		t.Errorf("a quiet side: fallback %q note %q", v.Fallback, v.TaintNote)
 	}
 }
+
+// Descriptions of version 1 on both sides say why the taint is not compared; a version 1 description beside a
+// side with no blocks is the one-sided case.
+func TestRealTaint_Version1Descriptions(t *testing.T) {
+	d := realRegistry(t).Describe()
+	d.Version, d.TaintDeclared = 1, false
+	for i := range d.Blocks {
+		d.Blocks[i].Untrusted = nil
+	}
+	both := func() *DiffView {
+		return realDiff(t, Config{Data: []byte(readsAfter), Description: &d, AllowUnusedBlocks: true}, Config{Data: []byte(readsBefore), Description: &d, AllowUnusedBlocks: true})
+	}
+	if v := both(); v.Fallback != "" || v.TaintNote != "taint not compared (the description does not carry taint declarations)" {
+		t.Errorf("both v1: fallback %q note %q", v.Fallback, v.TaintNote)
+	}
+	v := realDiff(t, Config{Data: []byte(readsAfter), Description: &d, AllowUnusedBlocks: true}, Config{Data: []byte(readsBefore)})
+	if v.Fallback != "" || !strings.Contains(v.TaintNote, "one side") {
+		t.Errorf("v1 beside structural: fallback %q note %q", v.Fallback, v.TaintNote)
+	}
+	// Any node says it, not the first one the map gives.
+	o := unknownFlow(nil)
+	n := unknownFlow(nil)
+	for k, tt := range n.Taint {
+		if k == "look" {
+			tt.Reason = "the description does not carry taint declarations (version 1)"
+			n.Taint[k] = tt
+		}
+	}
+	if note, _ := taintBasis(o, n, false, false); !strings.Contains(note, "does not carry taint declarations") {
+		t.Errorf("one node with the reason: %q", note)
+	}
+}

@@ -31,7 +31,7 @@ const (
 	// prefixes in internal/taintwords.
 	taintReasonNone   = taintwords.NoPolicy + ": nothing gates its side effect"
 	taintReasonBlocks = "blocks not known: check with -blocks or a Registry"
-	taintReasonV1     = "the description does not carry taint declarations (version 1)"
+	taintReasonV1     = taintwords.DescriptionV1 + " (version 1)"
 )
 
 // NodeTaint is the static taint verdict on one node. It says what a declared source can do to the node,
