@@ -5,6 +5,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/taintwords"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -95,7 +96,7 @@ func taintViews(nodes []Node, r plan.ConfigReport, tv *runview.TaintView, basis 
 		counts[t.Verdict]++
 		if r.Safety[nodes[i].Name] != plan.SafetyReadOnly {
 			s.Exposed = append(s.Exposed, nodes[i].Name)
-			if strings.HasPrefix(t.Reason, "taint policy not given") {
+			if strings.HasPrefix(t.Reason, taintwords.NotGiven) {
 				s.Unknown = append(s.Unknown, nodes[i].Name)
 			}
 		}
