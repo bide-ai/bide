@@ -39,6 +39,8 @@ type Registry struct {
 	// (RegistryDescription.TaintDeclared); a Registry built in Go always has them. An inert Registry
 	// without it knows nothing about taint, and does not declare "none".
 	taintDeclared bool
+	// policy is the taint policy of the description an inert Registry was built from, nil when it gave none.
+	policy *agent.TaintPolicy
 }
 
 // regBlock is a registered Step/Tool/Model. It mirrors the fields of node that a

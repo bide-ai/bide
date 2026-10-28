@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/agent"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
@@ -31,6 +32,9 @@ type Config struct {
 	// (plan.AllowUnusedBlocks). bide check -blocks sets it: a description is of the whole program, and
 	// a flow config uses some of its blocks.
 	AllowUnusedBlocks bool
+	// TaintPolicy is the flow's taint policy when the host has one (plan.InspectTaintPolicy); a
+	// description's own policy is used when it has one and this is nil.
+	TaintPolicy *agent.TaintPolicy
 	// Strict makes Check fail on a warning as well as on an error (bide view -check -strict).
 	Strict bool
 }
@@ -80,6 +84,9 @@ func (c Config) inspect() plan.ConfigReport {
 	if c.AllowUnusedBlocks {
 		opts = append(opts, plan.AllowUnusedBlocks())
 	}
+	if c.TaintPolicy != nil {
+		opts = append(opts, plan.InspectTaintPolicy(*c.TaintPolicy))
+	}
 	if c.Registry == nil && c.Description != nil {
 		return plan.InspectConfigDescribed(c.Data, *c.Description, opts...)
 	}
@@ -108,6 +115,8 @@ type ConfigView struct {
 	Risk RiskSummary `json:"risk"`
 	// Assertions are the verdicts on the config's assert lines, in order.
 	Assertions []plan.AssertionResult `json:"assertions,omitempty"`
+	// Taint is the static taint section (see TaintView), absent for a typed config with errors.
+	Taint *TaintView `json:"taint,omitempty"`
 	// Verdict is the answer the page opens with (see configVerdict); it is not in the JSON view.
 	Verdict Verdict `json:"-"`
 }
@@ -163,6 +172,7 @@ func BuildConfig(c Config) *ConfigView {
 	slices.Sort(v.Approvals)
 	v.Risk = riskSummary(r)
 	v.Assertions = r.Assertions
+	v.Taint = taintView(r)
 	if len(r.Topology.Nodes) > 0 {
 		v.Graph = configGraph(r)
 	}
@@ -417,6 +427,7 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 		fmt.Fprintf(w, "%s%s: %d assertion%s: %s, %s, %s\n", mark, name, len(r.Assertions), plural(len(r.Assertions)),
 			count(hold, "hold", st.OK), count(violated, "violated", st.Fail), count(other, "undecided or invalid", st.Warn))
 	}
+	writeTaint(w, st, name, taintView(r))
 	if r.Typed && c.source() == SourceDescription {
 		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(DescriptionNote+fileSum(c.DescriptionSHA256, " (description file sha256 ", ")")))
 	}

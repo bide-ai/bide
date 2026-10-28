@@ -52,7 +52,7 @@ func TestCheckYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if code := runview.Main([]string{"-config", good, "-check"}, &out, &errb, stores); code != 0 || out.Len() != 0 {
+	if code := runview.Main([]string{"-config", good, "-check"}, &out, &errb, stores); code != 0 || out.String() != good+": taint: not known without -blocks\n" {
 		t.Fatalf("-check of a clean config = %d, output %q", code, out.String())
 	}
 	// A switch with no else is a warning: lenient -check passes it, -strict fails it.

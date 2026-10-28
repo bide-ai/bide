@@ -45,7 +45,8 @@ type Change struct {
 	// adding or shortening one a strengthening (the gate fails closed sooner). Empty when the
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
-	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
+	// Weakening says what a weakened change weakened: "exposure" (a side-effecting node newly reads untrusted
+	// data and is exempt from the escalation gate, or a node no longer declares a source), "gate" (an approval policy: the gate was
 	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (a node
 	// newly reachable without passing an approval gate: one every path reached through a gate
 	// before, whatever its safety, or a new or newly wired-in effect), "safety" (a node's safety
@@ -57,6 +58,9 @@ type Change struct {
 	// summary, when set, is the Weakened entry for this change (an assert line that stopped
 	// holding says why, which a Details cut at its first parenthesis would lose).
 	summary string
+	// taint marks a change that reports the taint of a node beside its other changes, so the counts of
+	// changed nodes do not count the node twice.
+	taint bool
 }
 
 // String is the change as one line: "changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)".
@@ -99,6 +103,9 @@ type DiffView struct {
 	// OldFile and NewFile are the SHA-256 of the description file of each side, when it has one.
 	OldFile string `json:"old_file,omitempty"`
 	NewFile string `json:"new_file,omitempty"`
+	// Fallback is also set when the taint of the two sides could not be compared (a node newly reads untrusted
+	// data and the flow's policy is not given): the diff is then not certified.
+	//
 	// Fallback is set when a side checked against a Registry or a description had errors, so the typed
 	// comparison had nothing sound to read: the diff was made structurally, as it is without them,
 	// which never reads a gate as stronger than it can tell. It says so in words and the diff is not
@@ -129,6 +136,12 @@ type DiffView struct {
 	Verdict Verdict `json:"-"`
 	// sideOnly is set when only one side had a Registry or description, so the comparison was structural.
 	sideOnly bool
+	// sideStated is set with sideOnly when the side that had them declared or read a source, which the
+	// structural comparison cannot show.
+	sideStated bool
+	// TaintNote is set when the taint of neither side is known (no -blocks, or descriptions without the
+	// declarations): an informational line, "taint not compared (no -blocks)". It changes no certification.
+	TaintNote string `json:"taint_note,omitempty"`
 	// weakKinds is the Weakening of each Weakened entry, in order.
 	weakKinds []string
 }
@@ -260,6 +273,7 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		// what its config states, and the classifier reads "unknown" against "known" as a lowering and
 		// as a gate that appeared, so an unchanged config would fail. Compare structurally, as without
 		// it; the labels say which side was described.
+		v.sideStated = taintStated(o) || taintStated(n)
 		o, n = Config{Name: d.Old.Name, Data: d.Old.Data}.inspect(), Config{Name: d.New.Name, Data: d.New.Data}.inspect()
 		v.Typed = false
 		v.sideOnly = true
@@ -279,8 +293,34 @@ func BuildDiff(d Diff) (*DiffView, error) {
 // whichever sides it was made from.
 func (v *DiffView) finish(o, n plan.ConfigReport, oldSafety, newSafety map[string]string) {
 	v.Changes = diffChanges(o, n, oldSafety, newSafety)
+	renRev := map[string]string{}
+	for from, to := range renamedNodes(o, n) {
+		renRev[to] = from
+	}
+	tc, uncomparable := exposureChanges(o, n, renRev)
+	v.Changes = append(v.Changes, tc...)
+	note, unsure := taintBasis(o, n, v.sideOnly, v.sideStated)
+	if v.Fallback == "" {
+		v.TaintNote = note
+	}
+	if unsure != "" {
+		if v.Fallback != "" {
+			v.Fallback += "; "
+		} else {
+			v.Fallback = "not certified: "
+		}
+		v.Fallback += unsure
+	}
+	if len(uncomparable) > 0 {
+		note := uncomparableNote(uncomparable)
+		if v.Fallback != "" {
+			note = v.Fallback + "; " + strings.TrimPrefix(note, "not certified: ")
+		}
+		v.Fallback = note
+	}
 	for _, c := range v.Changes {
 		switch {
+		case c.taint:
 		case c.What == "node" && c.Change == "added":
 			v.Counts.NodesAdded++
 		case c.What == "node" && c.Change == "removed":
@@ -370,6 +410,9 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 	}
 	if l := v.BasisLine(); l != "" {
 		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(l))
+	}
+	if v.TaintNote != "" {
+		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(v.TaintNote))
 	}
 	return len(v.Weakened) > 0 || v.Fallback != "", nil
 }

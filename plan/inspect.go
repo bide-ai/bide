@@ -42,6 +42,12 @@ type ConfigReport struct {
 	// own included): the run cannot reach it without a human decision (vacuously so for a node the
 	// entry cannot reach). Without a Registry only the gates the config declares count.
 	Gated map[string]bool
+	// Taint is each node's static taint verdict (see NodeTaint), by node name: the may-version of the rule the
+	// engine enforces for a flow with a taint policy. With a Registry, or a description that carries the
+	// taint declarations, and a config without errors, it is exact for what is declared; without them every
+	// node is "unknown" (a node's entry then holds only the sources the config itself states), and a report
+	// with errors has none (nil). It never says a node is safe: see NodeTaint.
+	Taint map[string]NodeTaint
 }
 
 // ConfigProblem is one problem in a flow config. Node names the node, switched node or join it
@@ -116,7 +122,11 @@ func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigR
 // InspectOption changes what InspectConfig and InspectConfigDescribed check.
 type InspectOption func(*inspectOptions)
 
-type inspectOptions struct{ allowUnused bool }
+type inspectOptions struct {
+	allowUnused bool
+	// taintPolicy is the flow's taint policy when the caller gives it (InspectTaintPolicy).
+	taintPolicy *agent.TaintPolicy
+}
 
 // AllowUnusedBlocks makes a registered block the config does not use no problem. Load and Validate
 // refuse it (a registration nothing uses is drift), and so does a check without this option; a tool
@@ -206,6 +216,9 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	r.Topology = configTopology(&cfg)
 	r.Safety = configSafety(&cfg)
 	structural(&cfg, &r)
+	if reg == nil {
+		r.Taint = structuralTaint(&cfg, taintReasonBlocks)
+	}
 	if reg == nil && !r.Errors() {
 		// Without a Registry nothing runs Build, so its checks on the wiring alone are made here: a cycle,
 		// a loop's shape, reachability, a join's inputs, what feeds a node. With a Registry Build makes
@@ -305,6 +318,17 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	r.Topology = f.Topology()
 	r.Digest = f.Digest()
+	if why := reg.taintUnknownReason(); why != "" {
+		r.Taint = structuralTaint(&cfg, why)
+		return r
+	}
+	policy := o.taintPolicy
+	if policy == nil {
+		policy = reg.policy
+	}
+	if t, err := core.taintReport(policy); err == nil {
+		r.Taint = t
+	}
 	return r
 }
 

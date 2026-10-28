@@ -866,9 +866,13 @@ the consequences of an injected request. It does not detect or prevent the injec
   writes the marks of the flows the node started before the result, so a resolution that then fails leaves marks
   the flows did bring up. A `Trusted` node still takes the marks its nested
   flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
-  whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check -blocks`
-  and the typed editor read a description of the registered blocks, which carries the declarations of each block
-  (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+  whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check` prints
+  a static taint section (may-view over the engine's order and loops: it over-approximates, and cannot see a source
+  that is not declared, a run whose input is declared untrusted, or the taint of an agent or nested flow a block
+  runs; "no declared source before it" is never a statement that a node reads no untrusted data), and without
+  `-blocks` prints one line, "taint: not known without -blocks". A description carries the declarations of each block
+  (version 2) but the flow's policy only if the host sets it (`plan.DescribeTaintPolicy`), so a node is `reads
+  untrusted` with "taint policy not given" until then. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
 - **`SeparateApprovers` works on approver IDs.** Two IDs of one person are not told apart, and in a certificate-bound
   gate the decider is the approver name, not the certificate's subject. A call whose own gate is a cap rule's is not
   separated (the cap gate is chosen per call, and the registration check cannot see it). The displays read the call's

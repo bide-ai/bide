@@ -636,6 +636,11 @@ Approved on 2026-10-27 (PR 4): `plan.TaintPolicyDescription` (Gate, Refuse, Requ
 `plan.DescribeTaintPolicy(agent.TaintPolicy) (*TaintPolicyDescription, error)`. A Registry holds no policy: the host sets
 `TaintPolicy` with the helper, and a nil `TaintPolicy` reads "policy not given" in every view, never "no policy".
 
+Approved on 2026-10-27 (PR 5): the fields of `plan.NodeTaint` (`Verdict`, `Declares`, `Sources`, `Path`, `Exempt`, `Reason`; JSON `verdict`, `declares`, `sources`, `path`, `exempt`, `reason`), with the verdicts as plain strings and no exported constants; and
+`plan.InspectTaintPolicy(agent.TaintPolicy) InspectOption` (the zero policy states "known: no policy"; a policy not given is never read as none; an explicit option wins over a description's policy). Structural mode fills `Taint` with "unknown" for every node; a typed report with errors has none.
+Decided 2026-10-28: a `check -diff` with the taint unknown on both sides (no `-blocks`) prints an informational line, "taint not compared (no -blocks)", and changes no certification; with one side known and stating a source and the other unknown (for example `-blocks` without `-old-blocks`) it says "taint could not be compared" and is not certified, so `-fail-on-weaken` fails on it. A covered node that stays covered but differently (a refusal turned into a gate, a gate into an exemption) is listed. `flowedit.WithTaintPolicy(agent.TaintPolicy) Option` is approved for the editor (PR 6), with the semantics of `InspectTaintPolicy`.
+Decision on section 6 (2026-10-27): a side-effecting node that newly reads untrusted data is covered when the policy gates or refuses it, or it is exempt, and the change is listed; it is weakened ("exposure") only when uncovered (the policy is known to be absent or does not gate it); when the policy is not given the diff says the taint could not be compared and is not certified.
+
 New exported names (A6, section 7): `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`,
 `(*plan.Builder).WithTaintPolicy`, `plan.WithLoadedTaintPolicy`, one sentinel error (`plan.ErrTaintRefused`), the policy field of decision 8,
 `plan.ConfigReport.Taint` and `plan.NodeTaint`, the `RegistryDescription` version 2 fields, and the "exposure"

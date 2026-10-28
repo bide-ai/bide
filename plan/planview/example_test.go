@@ -31,6 +31,7 @@ func Example() {
 	}
 	planview.Check(os.Stdout, "orders.json", config, reg)
 	// Output:
+	// orders.json: taint: not known without -blocks
 	// orders.json:classify->done: edge "classify" -> "done" connects planview_test.Order to string (types must match exactly)
 }
 
@@ -55,6 +56,7 @@ func ExampleCheckDiff() {
 	// orders.json: changed node pay: approval 2 of 2 -> 1 of 2 (weakened)
 	// orders.json: approval policy weakened: pay: approval 2 of 2 -> 1 of 2
 	// orders.json: 1 change from main:orders.json (nodes: 0 added, 0 removed, 1 changed; edges: 0 added, 0 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
+	// orders.json: taint not compared (no -blocks)
 	// fail the build
 }
 

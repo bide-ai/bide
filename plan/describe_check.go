@@ -412,6 +412,7 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 	reg := NewRegistry()
 	reg.inert = true
 	reg.taintDeclared = d.TaintDeclared
+	reg.policy = describedPolicy(d.TaintPolicy)
 	for _, b := range d.Blocks {
 		kind := kindStep
 		switch b.Kind {

@@ -5,3 +5,4 @@
 ../../examples/plan/flows/refund-v1.yaml: removed edge validate -> review: else
 ../../examples/plan/flows/refund-v1.yaml: approval policy weakened: charge: approval 2 of 3 -> 1 of 3
 ../../examples/plan/flows/refund-v1.yaml: 5 changes from ../../examples/plan/flows/refund-v2.yaml (nodes: 1 added, 1 removed, 1 changed; edges: 1 added, 1 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
+../../examples/plan/flows/refund-v1.yaml: taint not compared (no -blocks)
