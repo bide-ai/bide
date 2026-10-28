@@ -62,6 +62,9 @@ type View struct {
 	// Typed is set when the editor knows the program's blocks (WithRegistry, WithBlocks): what the
 	// typed check rests on, the digest and the palette.
 	Typed *TypedView `json:"typed,omitempty"`
+	// Taint is the static taint view of the flow (the same analysis as bide check): the panel's headline,
+	// the exposed nodes and what it cannot know. Each node's own verdict is Node.Taint.
+	Taint *taintSummary `json:"taint,omitempty"`
 }
 
 // Verdict is the banner the page opens with: Class (good, bad, warn, info), the state in capitals
@@ -100,6 +103,9 @@ type Node struct {
 	Approval *Approval `json:"approval,omitempty"`
 	// Problems are this node's problems, as text.
 	Problems []string `json:"problems,omitempty"`
+	// Taint is what a declared source can do to the node, set when the node declares a source or may read
+	// one (see taintNode); nil otherwise, which says nothing about the node.
+	Taint *taintNode `json:"taint,omitempty"`
 	// In and Out are the node's input and output type names, as the digest writes them; set in typed
 	// mode only.
 	In  string `json:"in,omitempty"`
@@ -175,6 +181,11 @@ func buildView(name string, text []byte, ty *typing) *View {
 	}
 	v.AssertionForms = assertionFormsOf(lines)
 	v.Nodes = outline(data, r)
+	basis := ""
+	if ty != nil && ty.source == runview.SourceDescription {
+		basis = "per description file, not checked against the program"
+	}
+	v.Taint = taintViews(v.Nodes, r, cv.Taint, basis)
 	v.Wires = wires(data)
 	v.Wiring = wiring(v.Wires)
 	if ty != nil {

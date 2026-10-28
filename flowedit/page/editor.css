@@ -116,3 +116,11 @@ dialog h2 { margin-top: 0; }
 .afftable td:nth-child(2) { text-align: right; }
 .mono { font-family: var(--mono); font-size: var(--t-xs); }
 .wrapany { overflow-wrap: anywhere; }
+/* taint: the words are the state; the rings on the canvas only repeat them. */
+.outlist .taintw { display: block; font-size: var(--t-xs); font-weight: 600; }
+.taintsec { margin: var(--s3) 0; padding-top: var(--s2); border-top: 1px solid var(--line); }
+.taintsec h4 { margin: 0 0 var(--s2); }
+.taintcounts { margin: 0 0 var(--s2); padding-left: var(--s4); }
+#taint-panel .outlist { display: flex; flex-wrap: wrap; gap: var(--s1); }
+#taint-panel .outlist li { margin: 0; }
+#taint-panel .outlist button { width: auto; }

@@ -1,0 +1,3 @@
+Section: Added
+
+`bide edit` shows the static taint view: words and a ring under each node, the same words in the outline and the node's accessible name, a Taint section in the inspector with the path from a source, a Taint panel whose buttons select the nodes to look at, an announcement when it changes, and the banner UNTRUSTED EXPOSURE WIDENED when an edit makes a side-effecting node newly read untrusted data with no policy to cover it. `flowedit.WithTaintPolicy` gives an embedded editor the flow's taint policy; `bide edit -blocks` uses the description's. Without the declarations the editor says "taint: not known without -blocks". Experimental.

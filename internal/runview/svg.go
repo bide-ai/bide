@@ -178,6 +178,9 @@ func svg(g *Graph) string {
 		fmt.Fprintf(&b, `<g class="%s" data-id="%s" tabindex="0" role="img" aria-label="%s" data-detail="%s">`,
 			cls, html.EscapeString(n.Name), html.EscapeString(strings.ReplaceAll(title, "\n", ". ")), html.EscapeString(title))
 		fmt.Fprintf(&b, `<rect class="box" x="%d" y="%d" width="%d" height="%d" rx="12"/>`, n.x, n.y, nodeW, nodeH)
+		if n.TaintClass != "" {
+			fmt.Fprintf(&b, `<rect class="tring tr-%s" x="%d" y="%d" width="%d" height="%d" rx="9" aria-hidden="true"/>`, n.TaintClass, n.x+4, n.y+4, nodeW-8, nodeH-8)
+		}
 		fmt.Fprintf(&b, `<circle class="disc" cx="%d" cy="%d" r="14"/><use class="nicon" href="#gi-%s" x="%d" y="%d" width="16" height="16"/>`,
 			n.x+26, n.y+28, nodeIconName(n), n.x+18, n.y+20)
 		fmt.Fprintf(&b, `<text class="nlabel" x="%d" y="%d">%s</text>`, n.x+50, n.y+24, html.EscapeString(clip(label, 21)))
@@ -214,8 +217,14 @@ func svg(g *Graph) string {
 			fmt.Fprintf(&b, `<g class="gbadge %s"><rect x="%d" y="%d" width="%d" height="22" rx="11"/><use href="#gi-gate" x="%d" y="%d" width="12" height="12"/><text x="%d" y="%d">%s</text></g>`,
 				n.GateClass, bx-badgeW/2, by-11, badgeW, bx-badgeW/2+8, by-6, bx-badgeW/2+24, by+4, html.EscapeString(gateBadge(n.Gate)))
 		}
+		below := 16
 		if n.Note != "" {
-			fmt.Fprintf(&b, `<text class="nnote" x="%d" y="%d">%s</text>`, n.x+nodeW/2, n.y+nodeH+16, html.EscapeString(n.Note))
+			fmt.Fprintf(&b, `<text class="nnote" x="%d" y="%d">%s</text>`, n.x+nodeW/2, n.y+nodeH+below, html.EscapeString(n.Note))
+			below += 16
+		}
+		for _, l := range n.Taint {
+			fmt.Fprintf(&b, `<text class="ntaint tr-%s" x="%d" y="%d">%s</text>`, n.TaintClass, n.x+nodeW/2, n.y+nodeH+below, html.EscapeString(clip(l, 34)))
+			below += 15
 		}
 		fmt.Fprintf(&b, `<title>%s</title></g>`, html.EscapeString(title))
 	}

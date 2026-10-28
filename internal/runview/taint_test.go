@@ -3,6 +3,7 @@ package runview
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -83,5 +84,57 @@ func TestTaintView_StructuralAndErrors(t *testing.T) {
 	// A typed report with errors has none.
 	if taintView(plan.ConfigReport{Typed: true}) != nil {
 		t.Error("a report with no taint has a view")
+	}
+}
+
+func TestTaintTagAndGraph(t *testing.T) {
+	lines, class := TaintTag(plan.NodeTaint{Verdict: escal, Sources: []string{"a", "b"}, Declares: []string{"c"}})
+	if class != "escalates" || strings.Join(lines, "|") != "escalates: reads a, b|source: c" {
+		t.Errorf("escalates: %q %v", class, lines)
+	}
+	for verdict, want := range map[string]string{reads: "reads", "refused": "refused", exempt: "exempt"} {
+		if _, c := TaintTag(plan.NodeTaint{Verdict: verdict, Sources: []string{"a"}}); c != want {
+			t.Errorf("%s: class %q want %q", verdict, c, want)
+		}
+	}
+	if lines, c := TaintTag(plan.NodeTaint{Verdict: noSrc, Declares: []string{"c"}}); c != "source" || len(lines) != 1 {
+		t.Errorf("source only: %q %v", c, lines)
+	}
+	if lines, c := TaintTag(plan.NodeTaint{Verdict: noSrc}); c != "" || len(lines) != 0 {
+		t.Errorf("neither: %q %v", c, lines)
+	}
+	r := taintReport(map[string]plan.NodeTaint{
+		"src":  {Verdict: noSrc, Declares: []string{"inbound-email"}},
+		"pay":  {Verdict: escal, Sources: []string{"inbound-email"}, Path: []string{"src", "pay"}},
+		"look": {Verdict: noSrc},
+	}, effect, "src", "pay", "look")
+	r.Topology.Entry = "src"
+	r.Topology.Edges = []plan.TopologyEdge{{From: "src", To: "pay"}, {From: "pay", To: "look"}}
+	g := configGraph(r)
+	for _, want := range []string{`class="tring tr-source"`, `class="tring tr-escalates"`, `escalates: reads inbound-email`, `source: inbound-email`, `Taint: escalates, reads inbound-email via src &gt; pay`} {
+		if !strings.Contains(g.SVG, want) {
+			t.Errorf("the drawing lacks %q", want)
+		}
+	}
+	if strings.Count(g.SVG, `class="tring`) != 2 {
+		t.Errorf("a node with no taint has a ring")
+	}
+	// Unknown nodes carry no tag.
+	unk := plan.ConfigReport{Typed: false, Topology: r.Topology, Taint: map[string]plan.NodeTaint{"src": {Verdict: "unknown"}, "pay": {Verdict: "unknown"}, "look": {Verdict: "unknown"}}}
+	if g := configGraph(unk); strings.Contains(g.SVG, "tring") || strings.Contains(g.SVG, "ntaint") {
+		t.Error("an unknown report is tagged")
+	}
+}
+
+// Two tag lines of a node are drawn on lines of their own, below the box.
+func TestTaintTagLinesAreSpaced(t *testing.T) {
+	r := taintReport(map[string]plan.NodeTaint{
+		"src": {Verdict: escal, Sources: []string{"a"}, Declares: []string{"b"}}, "pay": {Verdict: noSrc}, "look": {Verdict: noSrc},
+	}, effect, "src", "pay", "look")
+	r.Topology.Entry = "src"
+	svg := configGraph(r).SVG
+	ys := regexp.MustCompile(`class="ntaint [^"]*" x="\d+" y="(\d+)"`).FindAllStringSubmatch(svg, -1)
+	if len(ys) != 2 || ys[0][1] == ys[1][1] {
+		t.Errorf("tag lines at %v", ys)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/planaccess"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
@@ -21,6 +22,7 @@ type typing struct {
 	reg    *plan.Registry
 	desc   plan.RegistryDescription // what the palette lists; a copy, so the host cannot change it later
 	source string                   // runview.SourceRegistry or runview.SourceDescription
+	policy *agent.TaintPolicy       // the flow's taint policy when the host gave it; nil: the description's own, or none given
 }
 
 // WithRegistry makes the editor typed against the program's Registry: it checks the config as Load
@@ -52,7 +54,7 @@ func newTyping(o options) (*typing, error) {
 		if len(d.Errors) > 0 {
 			return nil, fmt.Errorf("flowedit: the Registry reports %d error(s), so Load would refuse it; the first: %s", len(d.Errors), d.Errors[0])
 		}
-		return &typing{reg: o.reg, desc: d, source: runview.SourceRegistry}, nil
+		return &typing{reg: o.reg, desc: d, source: runview.SourceRegistry, policy: o.taintPolicy}, nil
 	case o.blocks != nil:
 		if err := o.blocks.Validate(); err != nil {
 			return nil, fmt.Errorf("flowedit: blocks: %w", err)
@@ -65,7 +67,7 @@ func newTyping(o options) (*typing, error) {
 		if err := json.Unmarshal(b, &d); err != nil {
 			return nil, fmt.Errorf("flowedit: blocks: %w", err)
 		}
-		return &typing{desc: d, source: runview.SourceDescription}, nil
+		return &typing{desc: d, source: runview.SourceDescription, policy: o.taintPolicy}, nil
 	}
 	return nil, nil
 }
@@ -75,7 +77,7 @@ func newTyping(o options) (*typing, error) {
 // verdict also compares the two texts structurally (see compare), because the program the baseline
 // was written for is not the program the editor knows.
 func (t *typing) config(name string, data []byte) runview.Config {
-	c := runview.Config{Name: name, Data: data, AllowUnusedBlocks: true}
+	c := runview.Config{Name: name, Data: data, AllowUnusedBlocks: true, TaintPolicy: t.policy}
 	if t.reg != nil {
 		c.Registry = t.reg
 	} else {
@@ -86,6 +88,9 @@ func (t *typing) config(name string, data []byte) runview.Config {
 
 func (t *typing) inspect(data []byte) plan.ConfigReport {
 	opts := []plan.InspectOption{plan.AllowUnusedBlocks()}
+	if t.policy != nil {
+		opts = append(opts, plan.InspectTaintPolicy(*t.policy))
+	}
 	if t.reg != nil {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}

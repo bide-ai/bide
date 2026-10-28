@@ -3,6 +3,7 @@ package runview
 import (
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -303,6 +304,7 @@ func configGraph(r plan.ConfigReport) *Graph {
 		}
 	}
 	declared := map[string]bool{}
+	taintKnown := slices.ContainsFunc(slices.Collect(maps.Values(r.Taint)), func(t plan.NodeTaint) bool { return t.Verdict != "unknown" })
 	for _, n := range t.Nodes {
 		declared[n.Name] = true
 		kind := string(n.Kind)
@@ -317,6 +319,12 @@ func configGraph(r plan.ConfigReport) *Graph {
 				gn.Title += "\nGated: every path to it passes an approval gate."
 			} else {
 				gn.Title += "\nUngated: a path reaches it without an approval gate."
+			}
+		}
+		if t, ok := r.Taint[n.Name]; ok && taintKnown {
+			gn.Taint, gn.TaintClass = TaintTag(t)
+			if tt := TaintText(t); tt != "" {
+				gn.Title += "\nTaint: " + tt
 			}
 		}
 		if n.Gate != nil {

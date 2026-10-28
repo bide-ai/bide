@@ -93,9 +93,13 @@ func taintView(r plan.ConfigReport) *TaintView {
 	return v
 }
 
-// taintNodeText is a node's taint as one line: the verdict, what it reads and how, what it declares, why.
-func taintNodeText(name string, t plan.NodeTaint) string {
-	s := name + ": " + t.Verdict
+// taintNodeText is a node's taint as one line: its name, then TaintText.
+func taintNodeText(name string, t plan.NodeTaint) string { return name + ": " + TaintText(t) }
+
+// TaintText is a node's taint in words: the verdict, what it reads and how, what it declares, why. Every
+// view says it in these words, and none of them is a statement that a node is safe.
+func TaintText(t plan.NodeTaint) string {
+	s := t.Verdict
 	if len(t.Sources) > 0 {
 		s += ", reads " + strings.Join(t.Sources, ", ")
 		if len(t.Path) > 1 {
@@ -114,6 +118,29 @@ func taintNodeText(name string, t plan.NodeTaint) string {
 		s += "; " + strings.TrimSuffix(r, "; ")
 	}
 	return s
+}
+
+// TaintTag is what the drawing says under a node: up to two short lines and the class of its ring, "" and
+// no lines for a node that neither reads nor declares a source. The class is one of reads, escalates,
+// refused, exempt (a node that reads a source) or source (a node that only declares one).
+func TaintTag(t plan.NodeTaint) (lines []string, class string) {
+	if len(t.Sources) > 0 {
+		switch t.Verdict {
+		case "escalates", "refused", "exempt":
+			class = t.Verdict
+			lines = append(lines, t.Verdict+": reads "+strings.Join(t.Sources, ", "))
+		default:
+			class = "reads"
+			lines = append(lines, "reads untrusted: "+strings.Join(t.Sources, ", "))
+		}
+	}
+	if len(t.Declares) > 0 {
+		if class == "" {
+			class = "source"
+		}
+		lines = append(lines, "source: "+strings.Join(t.Declares, ", "))
+	}
+	return lines, class
 }
 
 // writeTaint prints the taint section of a check.
