@@ -587,7 +587,8 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	// who it counted from it, as the gate did. Without it the recount counts no one.
 	counted := append(start, decisions...)
 	// The own gate is the call's or node's the instance belongs to; whether the policy separates approvers is
-	// what agent.ApprovalPolicy.SeparatedFrom marks (the subject it was given is not read back).
+	// what agent.ApprovalPolicy.SeparatedFrom marks. A subject it was given that does not match the instance's base
+	// finds no own outcome in the recount and counts no one, so it fails closed.
 	own := ""
 	if base, isInstance := escalation.Base(toolUseID); isInstance && separates(policy) {
 		own = base
@@ -662,8 +663,8 @@ func sameTreeHead(a, b SignedTreeHead) bool {
 	return a.Size == b.Size && bytes.Equal(a.Root, b.Root) && bytes.Equal(a.Signature, b.Signature)
 }
 
-// separates reports whether policy was marked with agent.ApprovalPolicy.SeparatedFrom: a copy of it taken apart from
-// no gate is not the policy itself exactly when it was.
+// separates reports whether policy was marked with agent.ApprovalPolicy.SeparatedFrom: SeparatedFrom("") clears the
+// marker, so a policy differs from its SeparatedFrom("") copy exactly when it was marked.
 func separates(policy agent.ApprovalPolicy) bool {
 	return !reflect.DeepEqual(policy, policy.SeparatedFrom(""))
 }
