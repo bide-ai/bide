@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# record.sh: regenerate assets/crash-demo.gif, the crash demo (a docs asset; the README's top image is assets/hero.gif). The terminal (crash-demo.tape,
-# recorded with charmbracelet/vhs) is on the left and the run's bide view page on the right, live
-# from the first frame: a card for the run without bide, the gate waiting (nothing signed, then
-# ops and finance signed, kept through the crash), the halt, the resolved run, the verified run, and
-# the tampered copy of the journal failing verification. Each page is a real `bide view` over a copy of the journal at that
-# state, captured with a headless Chromium; the demo reports when it reaches each state and keeps
-# the copy (BIDE_DEMO_RECORD: marks.txt and <state>.db).
+# record.sh: regenerate assets/crash-demo.gif, the crash demo (a docs asset; the README's top image
+# is assets/hero.gif). The terminal (crash-demo.tape, recorded with charmbracelet/vhs) is on the
+# left and the run's bide view page on the right, live from the first frame: a card for the run
+# without bide, the gate waiting (nothing signed, then ops and finance signed, kept through the
+# crash), the halt, the resolved run, the verified run, and the tampered copy of the journal failing
+# verification. Each page is a real `bide view` over a copy of the journal at that state, captured
+# with a headless Chromium; the demo reports when it reaches each state and keeps the copy
+# (BIDE_DEMO_RECORD: marks.txt and <state>.db).
 #
 #   assets/demo/record.sh
 #
