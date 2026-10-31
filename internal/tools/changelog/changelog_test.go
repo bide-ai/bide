@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -323,8 +325,8 @@ func TestRunCheck(t *testing.T) {
 	if c := check(""); c != 1 {
 		t.Errorf("code without a fragment: exit %d, want 1", c)
 	}
-	if c := check("bug, no-changelog"); c != 0 {
-		t.Errorf("code with the no-changelog label: exit %d", c)
+	if c := check("bug, no-changelog"); c != 1 {
+		t.Errorf("code with the no-changelog label: exit %d, want 1", c)
 	}
 	put(FragmentDir+"/x.md", "Section: Fixed\n\nx\n")
 	git("add", ".")
@@ -332,6 +334,189 @@ func TestRunCheck(t *testing.T) {
 	if c := check(""); c != 0 {
 		t.Errorf("code with a fragment: exit %d", c)
 	}
+}
+
+func TestNotSafe(t *testing.T) {
+	got := NotSafe([]string{"docs/a.md", "agent/run.go", "agent/run_test.go", "go.mod", "cmd/bide/main.go", "flowedit/go.sum", "examples/x/go.mod", "integration/go.sum", "go.work"})
+	if strings.Join(got, ",") != "agent/run.go,go.mod,cmd/bide/main.go,flowedit/go.sum" {
+		t.Errorf("NotSafe = %v", got)
+	}
+	if got := NotSafe([]string{"docs/a.md", ".github/workflows/ci.yml", "changes/unreleased/x.md"}); len(got) != 0 {
+		t.Errorf("NotSafe of a docs and CI change = %v", got)
+	}
+}
+
+func TestStray(t *testing.T) {
+	mods := []string{".", "store/sqlite", "store/sqlite/emulatortest"}
+	for _, c := range []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{"alt work file", []string{"alt.work"}, "alt.work"},
+		{"nested work sum", []string{"x/cross.work.sum", "docs/a.md"}, "x/cross.work.sum"},
+		{"the real workspace files", []string{"go.work", "go.work.sum"}, ""},
+		{"go work sync sweep", []string{"go.mod", "go.sum", "store/sqlite/go.mod", "store/sqlite/go.sum", "docs/a.md"}, "go.mod,go.sum,store/sqlite/go.mod,store/sqlite/go.sum"},
+		{"bump with its code", []string{"store/sqlite/go.mod", "store/sqlite/go.sum", "store/sqlite/store.go"}, ""},
+		{"code in the parent is not the nested module's", []string{"store/sqlite/store.go", "store/sqlite/emulatortest/go.mod"}, "store/sqlite/emulatortest/go.mod"},
+		{"a test file counts as Go code", []string{"go.mod", "agent/run_test.go"}, ""},
+		{"docs only", []string{"docs/a.md", "README.md"}, ""},
+	} {
+		if got := strings.Join(Stray(c.files, mods), ","); got != c.want {
+			t.Errorf("%s: Stray = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestRunCheckLabels runs the gate on scratch pull requests: the no-changelog label must be true,
+// and stray files fail unless the author or label exempts them.
+func TestRunCheckLabels(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", root, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	put := func(name, s string) {
+		p := filepath.Join(root, name)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	put("go.mod", "module x\n")
+	put("agent/a.go", "package agent\n")
+	put("store/go.mod", "module x/store\n")
+	put("examples/ex/go.mod", "module x/examples/ex\n")
+	put("examples/ex/main.go", "package main\n")
+	put("store/s.go", "package store\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "base")
+	base := git("rev-parse", "HEAD")
+	// pr commits the files on a branch from base and checks it; stderr is returned with the status.
+	pr := func(labels, author string, files map[string]string) (int, string) {
+		t.Helper()
+		git("checkout", "-q", "-B", "pr", base)
+		for n, s := range files {
+			put(n, s)
+		}
+		git("add", ".")
+		git("commit", "-q", "-m", "pr")
+		var out, errb bytes.Buffer
+		code := run([]string{"check", "-root", root, "-base", base, "-head", git("rev-parse", "HEAD"), "-labels", labels, "-author", author}, &out, &errb)
+		return code, errb.String()
+	}
+	expect := func(name string, code, want int, errs, mention string) {
+		t.Helper()
+		if code != want {
+			t.Errorf("%s: exit %d, want %d\n%s", name, code, want, errs)
+		}
+		if mention != "" && !strings.Contains(errs, mention) {
+			t.Errorf("%s: stderr lacks %q:\n%s", name, mention, errs)
+		}
+	}
+
+	c, e := pr("no-changelog", "me", map[string]string{"docs/a.md": "x\n", ".github/workflows/x.yml": "x\n"})
+	expect("docs and CI with the label", c, 0, e, "")
+	c, e = pr("", "me", map[string]string{"docs/a.md": "x\n"})
+	expect("docs without the label", c, 0, e, "")
+	c, e = pr("no-changelog", "me", map[string]string{"agent/a.go": "package agent\n\nvar X = 1\n", "docs/a.md": "x\n"})
+	expect("code with the label", c, 1, e, "agent/a.go")
+	if strings.Contains(e, "docs/a.md") {
+		t.Errorf("a safe file was listed:\n%s", e)
+	}
+	c, e = pr("", "me", map[string]string{"agent/a.go": "package agent\n\nvar X = 1\n", FragmentDir + "/x.md": "Section: Fixed\n\nx\n"})
+	expect("code with a fragment", c, 0, e, "")
+	c, e = pr("no-changelog", "me", map[string]string{"alt.work": "go 1.27\n"})
+	expect("stray work file", c, 1, e, "alt.work")
+	c, e = pr("", "me", map[string]string{"alt.work": "go 1.27\n"})
+	expect("stray work file without the label", c, 1, e, "alt.work")
+	c, e = pr("no-changelog", "me", map[string]string{"go.mod": "module x\n\ngo 1.27\n", "store/go.mod": "module x/store\n\ngo 1.27\n"})
+	expect("go work sync sweep", c, 1, e, "store/go.mod")
+	c, e = pr("", "me", map[string]string{"store/go.mod": "module x/store\n\ngo 1.27\n", "store/s.go": "package store\n\nvar X = 1\n", FragmentDir + "/x.md": "Section: Fixed\n\nx\n"})
+	expect("go.mod change beside its module's code", c, 0, e, "")
+	c, e = pr("no-changelog", "me", map[string]string{"store/go.mod": "module x/store\n\ngo 1.27\n", "store/s.go": "package store\n\n// c\n"})
+	expect("label, go.mod of a published module", c, 1, e, "store/go.mod")
+	c, e = pr("no-changelog", "me", map[string]string{"examples/ex/go.mod": "module x/examples/ex\n\ngo 1.27\n", "examples/ex/main.go": "package main\n\n// c\n"})
+	expect("label, go.mod of an example", c, 0, e, "")
+	c, e = pr("no-changelog", "dependabot[bot]", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
+	expect("label, dependabot bump of a published module", c, 1, e, "go.mod")
+	c, e = pr("", "dependabot[bot]", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
+	expect("dependabot bump", c, 0, e, "")
+	c, e = pr("dependencies", "me", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
+	expect("dependencies label", c, 0, e, "")
+}
+
+func TestGitDiffEmpty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	for _, a := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, a...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", a, err, out)
+		}
+	}
+	files, err := gitDiff(root, "HEAD", "HEAD", "")
+	if err != nil || len(files) != 0 {
+		t.Errorf("an empty diff = %q, %v; want no files", files, err)
+	}
+}
+
+// TestNoEmbedOfExemptPaths: exempt() goes by path (every .md file and testdata directory), so a
+// go:embed in a published package must not match one.
+func TestNoEmbedOfExemptPaths(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.work")); err != nil {
+		t.Skip("not in the repository tree")
+	}
+	embed := regexp.MustCompile(`(?m)^\s*//go:embed\s+(.+)$`)
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "node_modules" || (rel != "." && exemptDir(rel+"/")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") || exempt(rel) {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		for _, m := range embed.FindAllStringSubmatch(string(src), -1) {
+			for _, pat := range strings.Fields(m[1]) {
+				pat = strings.Trim(strings.TrimPrefix(pat, "all:"), `"`+"`")
+				matches, _ := filepath.Glob(filepath.Join(filepath.Dir(p), pat))
+				for _, mt := range matches {
+					filepath.WalkDir(mt, func(q string, qd fs.DirEntry, err error) error {
+						if err != nil || qd.IsDir() {
+							return nil
+						}
+						qr, _ := filepath.Rel(root, q)
+						if qr = filepath.ToSlash(qr); exempt(qr) {
+							t.Errorf("%s embeds %s, which the changelog check treats as exempt (a .md file or testdata)", rel, qr)
+						}
+						return nil
+					})
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // A release candidate is assembled like a release: its section sits above the last release, the

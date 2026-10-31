@@ -178,15 +178,27 @@ Section: Fixed
   such as `List<T>`. The docs site (VitePress) builds from the changelog and reads a bare `<word>`
   as an HTML element, which fails its build; `changelog lint` refuses one outside a code span
   (autolinks such as `<https://...>` and comparisons such as `a < b` are fine).
-- Internal-only changes (CI, tests, docs, examples, refactors with no API or behavior change) need
-  no fragment.
+- Internal-only changes (CI, tests, docs, examples) need no fragment.
 
 The Changelog workflow fails a pull request that changes code a published module ships (anything
 outside documentation, tests, `testdata`, CI, `examples/`, `integration/`, `benchmarks/`,
 `scripts/`, `internal/tools/` and the `go.mod` and `go.sum` files) and adds no fragment. A
-maintainer can give the pull request the `no-changelog` label when the change has no user-facing
-effect; the check runs again when a label changes. It also parses every fragment, so a malformed
-one fails. Run the same checks locally:
+maintainer can give the pull request the `no-changelog` label to say the change needs no fragment.
+The label has to be true: the check fails a labelled pull request that changes any file outside
+that exempt set, or changes the `go.mod` or `go.sum` of a published module (its `go`, toolchain
+and `require` lines reach users), and prints each such file. A change to code with no user-facing
+effect adds a fragment saying so, or is split so the code is not in the labelled pull request.
+Whatever the label, the check also fails on files that look committed by mistake: a Go workspace
+file other than `go.work` and `go.work.sum` (a scratch `alt.work` or `cross.work.sum`), and a
+`go.mod` or `go.sum` in a module whose Go files the pull request does not change (what
+`go work sync` leaves behind). Dependabot's pull requests and ones with the `dependencies` label
+are exempt from that second rule; use the label for a deliberate bump across modules.
+
+Exemption goes by path alone: every `*.md` file and every `testdata` directory counts as exempt
+wherever it is, so a published module must not `go:embed` one (a test fails if it does).
+
+The check runs again when a label changes. It also parses every fragment, so a malformed one
+fails. Run the same checks locally:
 
 ```
 go run ./internal/tools/changelog lint
