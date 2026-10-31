@@ -324,11 +324,22 @@ var exemptDirs = []string{
 	"examples/", "integration/", "benchmarks/", "scripts/", "internal/tools/",
 }
 
-func exempt(f string) bool {
+func exemptDir(f string) bool {
 	for _, d := range exemptDirs {
 		if strings.HasPrefix(f, d) {
 			return true
 		}
+	}
+	return false
+}
+
+// exempt reports whether a file never needs a fragment. It goes by path alone: every *.md file and
+// every testdata directory is exempt wherever it is, so a published module must not go:embed one
+// (TestNoEmbedOfExemptPaths fails when a package does), or an embedded file could change what a
+// module ships with no fragment.
+func exempt(f string) bool {
+	if exemptDir(f) {
+		return true
 	}
 	if strings.HasSuffix(f, ".md") || strings.HasSuffix(f, "_test.go") {
 		return true
@@ -346,16 +357,23 @@ func exempt(f string) bool {
 }
 
 // NotSafe returns the files of a change that are outside the set a no-changelog pull request may
-// change: the ones NeedsFragment counts as published code. A pull request with the no-changelog
+// change: the ones NeedsFragment counts as published code, and the go.mod and go.sum of a published
+// module (a go, toolchain or require change there reaches its users; NeedsFragment lets them pass
+// because a bump alone is not a user-facing entry). A pull request with the no-changelog
 // label claims that nothing it changes needs a changelog line, and this is the claim's check.
 func NotSafe(files []string) []string {
 	var out []string
 	for _, f := range files {
-		if !exempt(f) {
+		if !exempt(f) || (isModFile(f) && !exemptDir(f)) {
 			out = append(out, f)
 		}
 	}
 	return out
+}
+
+func isModFile(f string) bool {
+	base := f[strings.LastIndex(f, "/")+1:]
+	return base == "go.mod" || base == "go.sum"
 }
 
 // Stray returns the files of a change that are never meant to be committed, whatever the label:

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -335,8 +337,8 @@ func TestRunCheck(t *testing.T) {
 }
 
 func TestNotSafe(t *testing.T) {
-	got := NotSafe([]string{"docs/a.md", "agent/run.go", "agent/run_test.go", "go.mod", "cmd/bide/main.go"})
-	if strings.Join(got, ",") != "agent/run.go,cmd/bide/main.go" {
+	got := NotSafe([]string{"docs/a.md", "agent/run.go", "agent/run_test.go", "go.mod", "cmd/bide/main.go", "flowedit/go.sum", "examples/x/go.mod", "integration/go.sum", "go.work"})
+	if strings.Join(got, ",") != "agent/run.go,go.mod,cmd/bide/main.go,flowedit/go.sum" {
 		t.Errorf("NotSafe = %v", got)
 	}
 	if got := NotSafe([]string{"docs/a.md", ".github/workflows/ci.yml", "changes/unreleased/x.md"}); len(got) != 0 {
@@ -392,6 +394,8 @@ func TestRunCheckLabels(t *testing.T) {
 	put("go.mod", "module x\n")
 	put("agent/a.go", "package agent\n")
 	put("store/go.mod", "module x/store\n")
+	put("examples/ex/go.mod", "module x/examples/ex\n")
+	put("examples/ex/main.go", "package main\n")
 	put("store/s.go", "package store\n")
 	git("add", ".")
 	git("commit", "-q", "-m", "base")
@@ -438,10 +442,81 @@ func TestRunCheckLabels(t *testing.T) {
 	expect("go work sync sweep", c, 1, e, "store/go.mod")
 	c, e = pr("", "me", map[string]string{"store/go.mod": "module x/store\n\ngo 1.27\n", "store/s.go": "package store\n\nvar X = 1\n", FragmentDir + "/x.md": "Section: Fixed\n\nx\n"})
 	expect("go.mod change beside its module's code", c, 0, e, "")
+	c, e = pr("no-changelog", "me", map[string]string{"store/go.mod": "module x/store\n\ngo 1.27\n", "store/s.go": "package store\n\n// c\n"})
+	expect("label, go.mod of a published module", c, 1, e, "store/go.mod")
+	c, e = pr("no-changelog", "me", map[string]string{"examples/ex/go.mod": "module x/examples/ex\n\ngo 1.27\n", "examples/ex/main.go": "package main\n\n// c\n"})
+	expect("label, go.mod of an example", c, 0, e, "")
+	c, e = pr("no-changelog", "dependabot[bot]", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
+	expect("label, dependabot bump of a published module", c, 1, e, "go.mod")
 	c, e = pr("", "dependabot[bot]", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
 	expect("dependabot bump", c, 0, e, "")
 	c, e = pr("dependencies", "me", map[string]string{"go.mod": "module x\n\ngo 1.27\n"})
 	expect("dependencies label", c, 0, e, "")
+}
+
+func TestGitDiffEmpty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	for _, a := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, a...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", a, err, out)
+		}
+	}
+	files, err := gitDiff(root, "HEAD", "HEAD", "")
+	if err != nil || len(files) != 0 {
+		t.Errorf("an empty diff = %q, %v; want no files", files, err)
+	}
+}
+
+// TestNoEmbedOfExemptPaths: exempt() goes by path (every .md file and testdata directory), so a
+// go:embed in a published package must not match one.
+func TestNoEmbedOfExemptPaths(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.work")); err != nil {
+		t.Skip("not in the repository tree")
+	}
+	embed := regexp.MustCompile(`(?m)^\s*//go:embed\s+(.+)$`)
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "node_modules" || (rel != "." && exemptDir(rel+"/")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") || exempt(rel) {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		for _, m := range embed.FindAllStringSubmatch(string(src), -1) {
+			for _, pat := range strings.Fields(m[1]) {
+				pat = strings.Trim(strings.TrimPrefix(pat, "all:"), `"`+"`")
+				matches, _ := filepath.Glob(filepath.Join(filepath.Dir(p), pat))
+				for _, mt := range matches {
+					filepath.WalkDir(mt, func(q string, qd fs.DirEntry, err error) error {
+						if err != nil || qd.IsDir() {
+							return nil
+						}
+						qr, _ := filepath.Rel(root, q)
+						if qr = filepath.ToSlash(qr); exempt(qr) {
+							t.Errorf("%s embeds %s, which the changelog check treats as exempt (a .md file or testdata)", rel, qr)
+						}
+						return nil
+					})
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // A release candidate is assembled like a release: its section sits above the last release, the

@@ -14,10 +14,11 @@
 // lint parses every fragment. assemble folds the fragments into CHANGELOG.md as the section for
 // the version, updates its compare links, and deletes the fragments; with -n it prints the new
 // section and changes nothing. check is the pull request gate: a change to code a published
-// module ships needs an added fragment, unless the pull request has the no-changelog label, and a pull
-// request with that label fails if it changes any such code. Any pull request fails on stray files (scratch workspace
-// files; go.mod or go.sum of a module whose Go code it leaves alone) unless it is Dependabot's or
-// carries the dependencies label.
+// module ships needs an added fragment. The no-changelog label says no fragment is needed, and the
+// check fails a labelled pull request that changes such code, or a go.mod or go.sum of a published
+// module (its go, toolchain and require lines reach users). Any pull request fails on stray files
+// (scratch workspace files; go.mod or go.sum of a module whose Go code it leaves alone) unless it
+// is Dependabot's or carries the dependencies label.
 //
 // The exit status is 0 when clean, 1 on findings, and 2 when the command could not run.
 package main
@@ -185,5 +186,11 @@ func gitDiff(root, base, head, filter string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s...%s: %w", base, head, err)
 	}
-	return strings.Split(strings.TrimRight(string(out), "\n"), "\n"), nil
+	var files []string
+	for _, f := range strings.Split(string(out), "\n") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files, nil
 }
