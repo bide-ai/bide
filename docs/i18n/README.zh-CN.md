@@ -10,7 +10,7 @@
   面向经手资金的 AI 智能体的 Go 框架：有风险的调用经过批准，每个动作都有记录且可验证。
 </p>
 
-<p align="center"><img src="../../assets/crash-demo.gif" width="100%" alt="bide demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，随后根据支付服务商的记录解决，bide view 显示审计证明与 2/3 审批签名均已验证；没有 bide 时重启会重试扣款，服务商扣了两次；停下时会通过签名 webhook 通知；改动日志副本中的一个金额则验证失败"></p>
+<p align="center"><img src="../../assets/hero.gif" width="100%" alt="bide demo：智能体在扣款中途被杀死，重启后以 outcome unknown 停下而不是再次扣款，并通知运维；随后智能体读取一封标记为不可信的入站邮件，邮件要求退款 4,800 美元，bide 扣住这笔退款并给出原因（来自 inbound-email 的不可信内容）；bide approve 因职责分离拒绝请求方 risk；ops 与 finance 各自签名（3 人中 2 人）；退款随后只执行一次，运行视图显示 VERIFIED，bide audit verify-approvals 以 2 个必需审批中的 2 个通过"></p>
 <p align="center">
   <img src="../../assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>一次你能解除的暂停，胜过一次你无法撤销的重复触发。</em>&nbsp;&nbsp;<img src="../../assets/quote-rule-right.png" width="72" alt="">
 </p>
