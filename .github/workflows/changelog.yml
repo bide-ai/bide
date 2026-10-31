@@ -1,9 +1,12 @@
 name: Changelog
 
 # A pull request that changes code a published module ships adds a changelog fragment
-# (changes/unreleased/<slug>.md, see CONTRIBUTING.md), or carries the no-changelog label. What counts
+# (changes/unreleased/<slug>.md, see CONTRIBUTING.md). The no-changelog label is only for a pull
+# request that changes no such code, and the check fails a labelled pull request that does. Stray
+# files (scratch *.work files, go.mod or go.sum of a module whose Go code the pull request leaves
+# alone) fail any pull request except Dependabot's and one with the dependencies label. What counts
 # as code is defined in internal/tools/changelog (documentation, tests, CI, examples, scripts and
-# the repository's tools do not). The check runs again when a label is added or removed. In the
+# # the repository's tools do not). The check runs again when a label is added or removed. In the
 # merge queue it passes: the pull request was checked before it was queued.
 
 on:
@@ -38,4 +41,5 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: go run ./internal/tools/changelog check -base "$BASE" -head "$HEAD" -labels "$LABELS"
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: go run ./internal/tools/changelog check -base "$BASE" -head "$HEAD" -labels "$LABELS" -author "$AUTHOR"

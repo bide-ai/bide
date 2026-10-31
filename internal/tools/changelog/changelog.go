@@ -345,6 +345,55 @@ func exempt(f string) bool {
 	return strings.HasSuffix(f, "/go.sum") || strings.HasSuffix(f, "/go.mod") || f == "go.mod"
 }
 
+// NotSafe returns the files of a change that are outside the set a no-changelog pull request may
+// change: the ones NeedsFragment counts as published code. A pull request with the no-changelog
+// label claims that nothing it changes needs a changelog line, and this is the claim's check.
+func NotSafe(files []string) []string {
+	var out []string
+	for _, f := range files {
+		if !exempt(f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// Stray returns the files of a change that are never meant to be committed, whatever the label:
+// a Go workspace file other than go.work and go.work.sum (scratch files such as alt.work), and a
+// go.mod or go.sum of a module in which the change touches no Go file (what `go work sync` leaves
+// behind in every module). modules lists the directories of the repository's modules ("." for the
+// root), and a file belongs to the module of its longest directory prefix.
+func Stray(files, modules []string) []string {
+	touched := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, ".go") {
+			touched[moduleOf(f, modules)] = true
+		}
+	}
+	var out []string
+	for _, f := range files {
+		base := f[strings.LastIndex(f, "/")+1:]
+		switch {
+		case (strings.HasSuffix(base, ".work") || strings.HasSuffix(base, ".work.sum")) && base != "go.work" && base != "go.work.sum":
+			out = append(out, f)
+		case (base == "go.mod" || base == "go.sum") && !touched[moduleOf(f, modules)]:
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// moduleOf returns the directory in modules that holds file: the longest one that prefixes it.
+func moduleOf(file string, modules []string) string {
+	best := "."
+	for _, m := range modules {
+		if m != "." && strings.HasPrefix(file, m+"/") && (best == "." || len(m) > len(best)) {
+			best = m
+		}
+	}
+	return best
+}
+
 // HasFragment reports whether the added or modified files include a fragment.
 func HasFragment(added []string) bool {
 	for _, f := range added {

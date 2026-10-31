@@ -9,12 +9,15 @@
 //
 //	go run ./internal/tools/changelog lint [-root dir]
 //	go run ./internal/tools/changelog assemble -version 0.16.0 -date 2026-10-20 [-root dir] [-n]
-//	go run ./internal/tools/changelog check -base SHA -head SHA [-labels a,b]
+//	go run ./internal/tools/changelog check -base SHA -head SHA [-labels a,b] [-author login]
 //
 // lint parses every fragment. assemble folds the fragments into CHANGELOG.md as the section for
 // the version, updates its compare links, and deletes the fragments; with -n it prints the new
 // section and changes nothing. check is the pull request gate: a change to code a published
-// module ships needs an added fragment, unless the pull request has the no-changelog label.
+// module ships needs an added fragment, unless the pull request has the no-changelog label, and a pull
+// request with that label fails if it changes any such code. Any pull request fails on stray files (scratch workspace
+// files; go.mod or go.sum of a module whose Go code it leaves alone) unless it is Dependabot's or
+// carries the dependencies label.
 //
 // The exit status is 0 when clean, 1 on findings, and 2 when the command could not run.
 package main
@@ -47,6 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	base := fs.String("base", "", "check: the pull request's base commit")
 	head := fs.String("head", "", "check: the pull request's head commit")
 	labels := fs.String("labels", "", "check: the pull request's labels, comma-separated")
+	author := fs.String("author", "", "check: the pull request's author (dependabot[bot] is exempt from the stray-file rule)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -102,22 +106,63 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
+		if !hasLabel(*labels, "dependencies") && *author != "dependabot[bot]" {
+			mods, err := moduleDirs(*root, *head)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 2
+			}
+			if stray := Stray(all, mods); len(stray) > 0 {
+				fmt.Fprintln(stderr, "changelog: the pull request changes files that look committed by mistake:")
+				for _, f := range stray {
+					fmt.Fprintln(stderr, "  "+f)
+				}
+				fmt.Fprintln(stderr, "A scratch workspace file, or a go.mod or go.sum of a module whose Go code the pull request does not touch (go work sync does this), "+
+					"does not belong here. Revert them; a dependency bump pull request carries the dependencies label (CONTRIBUTING.md, \"Changelog\").")
+				return 1
+			}
+		}
+		if hasLabel(*labels, "no-changelog") {
+			if bad := NotSafe(all); len(bad) > 0 {
+				fmt.Fprintln(stderr, "changelog: the pull request has the no-changelog label but changes code a published module ships:")
+				for _, f := range bad {
+					fmt.Fprintln(stderr, "  "+f)
+				}
+				fmt.Fprintf(stderr, "Add a fragment (%s/<slug>.md) or take the label off (CONTRIBUTING.md, \"Changelog\").\n", FragmentDir)
+				return 1
+			}
+		}
 		switch {
 		case !NeedsFragment(all):
 			fmt.Fprintln(stdout, "changelog: no published code changed; no fragment needed")
 		case HasFragment(added):
 			fmt.Fprintln(stdout, "changelog: the change adds a fragment")
-		case hasLabel(*labels, "no-changelog"):
-			fmt.Fprintln(stdout, "changelog: the pull request has the no-changelog label")
 		default:
 			fmt.Fprintf(stderr, "changelog: this change touches code a published module ships and adds no fragment.\n"+
-				"Add %s/<slug>.md (see CONTRIBUTING.md, \"Changelog\"), or give the pull request the no-changelog label.\n", FragmentDir)
+				"Add %s/<slug>.md (see CONTRIBUTING.md, \"Changelog\"), or give the pull request the no-changelog label (it must then change no such code).\n", FragmentDir)
 			return 1
 		}
 		return 0
 	}
 	fmt.Fprintf(stderr, "changelog: unknown command %q\n", args[0])
 	return 2
+}
+
+// moduleDirs lists the directories of the modules in the tree of commit head ("." for the root).
+func moduleDirs(root, head string) ([]string, error) {
+	out, err := exec.Command("git", "-C", root, "ls-tree", "-r", "--name-only", head).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree %s: %w", head, err)
+	}
+	var dirs []string
+	for _, f := range strings.Split(string(out), "\n") {
+		if f == "go.mod" {
+			dirs = append(dirs, ".")
+		} else if strings.HasSuffix(f, "/go.mod") {
+			dirs = append(dirs, strings.TrimSuffix(f, "/go.mod"))
+		}
+	}
+	return dirs, nil
 }
 
 func hasLabel(labels, want string) bool {
