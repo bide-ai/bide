@@ -10,7 +10,7 @@
   A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.
 </p>
 
-<p align="center"><img src="assets/hero.gif" width="100%" alt="bide demo: an agent is killed mid-charge and the restart halts with outcome unknown instead of charging again, and ops is notified; then an agent reads an inbound email marked untrusted that tells it to refund $4,800, and bide holds the refund with the reason (untrusted content from inbound-email); bide approve refuses the requester, risk, because of separation of duties; ops and finance each sign, a 2-of-3 tally; the refund then runs once, the run view shows VERIFIED, and bide audit verify-approvals passes with 2 of 2 required approvals"></p>
+<p align="center"><img src="assets/hero.gif" width="100%" alt="bide demo: an agent is killed mid-charge and the restart halts with outcome unknown instead of charging again, and ops is notified; then an agent reads an inbound email marked untrusted that tells it to refund $4,800, and bide holds the refund with the reason (untrusted content from inbound-email); bide approve refuses the requester, risk, because of separation of duties; a 2-of-3 approval policy: ops and finance each sign; the refund then runs once, the run view shows VERIFIED, and bide audit verify-approvals passes with both required approvals verified"></p>
 <p align="center">
   <img src="assets/quote-rule-left.png" width="72" alt="">&nbsp;&nbsp;<em>A pause you can clear beats a double-fire you can't.</em>&nbsp;&nbsp;<img src="assets/quote-rule-right.png" width="72" alt="">
 </p>

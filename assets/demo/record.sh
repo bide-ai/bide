@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# record.sh: regenerate assets/crash-demo.gif, the README's hero. The terminal (crash-demo.tape,
+# record.sh: regenerate assets/crash-demo.gif, the crash demo (a docs asset; the README's top image is assets/hero.gif). The terminal (crash-demo.tape,
 # recorded with charmbracelet/vhs) is on the left and the run's bide view page on the right, live
 # from the first frame: a card for the run without bide, the gate waiting (nothing signed, then
 # ops and finance signed, kept through the crash), the halt, the resolved run, the verified run, and
@@ -28,7 +28,7 @@ done
 [ -n "${CHROME:-}" ] || { echo "record.sh: no Chromium-based browser found; set CHROME" >&2; exit 1; }
 
 # The panes: the terminal is the tape's size, the page 600x1050 (520 CSS pixels wide, scaled by 600/520,
-# so its text stays legible when the README shows the GIF about 800 pixels wide).
+# so its text stays legible when the GIF is shown about 800 pixels wide).
 TW=790 H=1050 VW=600
 ENTER=1.1 # seconds into the recording at which the tape presses Enter
 
