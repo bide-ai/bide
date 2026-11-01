@@ -7,6 +7,8 @@
 # Test binaries, coverage, profiles
 *.test
 *.out
+# the promo recorder's default output (assets/demo/stripe-promo-record.sh)
+/assets/demo/out/
 # coverage output only (not the coverage workflow, script or config)
 /coverage.out
 /coverage.txt
