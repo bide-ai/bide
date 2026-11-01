@@ -5,29 +5,64 @@
 # Stripe and finishes, and a curl asks Stripe how many refunds carry the run's key. The run's bide
 # view page is below, changing at each state. Each page is a real `bide view` over a copy of the
 # journal taken when the terminal reached that state, captured with a headless Chromium; the script
-# checks that bide view left every journal byte for byte unchanged.
+# checks that bide view left every journal database file (the .db, and its -wal when it has content;
+# the -shm is index memory, and an empty -wal holds no data, so both are left out by design) byte for
+# byte unchanged.
 #
 #   STRIPE_SECRET_KEY=sk_test_... assets/demo/stripe-promo-record.sh [pi_...]
+#   assets/demo/stripe-promo-record.sh --self-test      # proves the key guard, no key needed
 #
 # The payment intent is made for you when none is given (a 50.00 test payment, test mode only).
 # Output goes to $OUT (default assets/demo/out, which git ignores), as
 # stripe-refund-split.gif and stripe-refund-split.mp4. The key is only ever in the environment: it is
 # not typed into the recording or printed, and the script refuses to finish if it finds it in any
-# file it kept.
+# file it kept. That guard is a byte match (grep -rF) over the logs, tapes and journals of the run,
+# not a look at pixels: the protection for the frames is that nothing prints the key. Curl gets the
+# key from a config file (-K), so it is not in any process's argument list.
 #
 # STRIPE_PROMO_REHEARSE=1 runs the same pipeline against a local stand-in for Stripe
 # (assets/demo/stripe-promo/fakestripe.go) with a placeholder key, for layout and timing work.
 #
-# Needs vhs (which brings ttyd and ffmpeg), a Chromium-based browser (set CHROME if it is not found),
-# Go, and python3 with Pillow (it crops one screenshot).
+# macOS only (it uses script, shasum and BSD date/sed behavior). Needs vhs (which brings ttyd and
+# ffmpeg), a Chromium-based browser (set CHROME if it is not found), Go, bc, perl, curl, and python3
+# with Pillow (it crops one screenshot).
 set -euo pipefail
+
+# key_guard dir key: succeeds only when grep ran cleanly and found the key nowhere under dir. A match
+# (status 0) and a grep error (status 2) both refuse. The bin directory (programs built before the key
+# is used; the stand-in's own default key is compiled into one) is not searched.
+key_guard() {
+  local rc=0
+  grep -rqF --exclude-dir=bin -- "$2" "$1" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+if [ "${1:-}" = --self-test ]; then
+  st=$(mktemp -d)
+  trap 'rm -rf "$st"' EXIT
+  k=sk_test_SELFTESTplantedkey0123456789
+  for i in $(seq 1 320); do mkdir -p "$st/d$((i % 7))"; printf 'log line %s\nnothing here\n' "$i" > "$st/d$((i % 7))/f$i.txt"; done
+  key_guard "$st" "$k" || { echo "self-test: the guard refused a clean tree" >&2; exit 1; }
+  for i in $(seq 1 320); do
+    f="$st/d$((i % 7))/f$i.txt"
+    cp "$f" "$f.orig"
+    printf 'x %s y\n' "$k" >> "$f"
+    if key_guard "$st" "$k"; then echo "self-test: the guard missed the key planted in $f" >&2; exit 1; fi
+    mv "$f.orig" "$f"
+  done
+  if key_guard "$st/does-not-exist" "$k" 2>/dev/null; then echo "self-test: the guard accepted a grep error" >&2; exit 1; fi
+  key_guard "$st" "$k" || { echo "self-test: the guard refused the restored clean tree" >&2; exit 1; }
+  echo "key guard self-test: refused all 320 planted copies and a grep error, accepted the clean tree"
+  exit 0
+fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 OUT=${OUT:-$root/assets/demo/out}
 work=$(mktemp -d)
 pids=()
-cleanup() { for p in "${pids[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done; [ -n "${KEEP_WORK:-}" ] || rm -rf "$work"; }
+keydir=$(mktemp -d) # holds the curl config with the key; outside $work so the guard scans only what is kept
+chmod 700 "$keydir"
+cleanup() { for p in "${pids[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done; rm -rf "$keydir"; [ -n "${KEEP_WORK:-}" ] || rm -rf "$work"; }
 trap cleanup EXIT
 
 for c in "${CHROME:-}" \
@@ -40,25 +75,32 @@ done
 [ -n "${CHROME:-}" ] || { echo "stripe-promo-record.sh: no Chromium-based browser found; set CHROME" >&2; exit 1; }
 
 # ---- Stripe, real or the rehearsal stand-in
+write_curl_cfg() { (umask 077; printf 'user = "%s:"\n' "$STRIPE_SECRET_KEY" > "$keydir/curl.cfg"); }
 if [ -n "${STRIPE_PROMO_REHEARSE:-}" ]; then
   export STRIPE_SECRET_KEY=sk_test_rehearsal STRIPE_API_BASE=http://127.0.0.1:18599
   ! (exec 3<>/dev/tcp/127.0.0.1/18599) 2>/dev/null || { echo "stripe-promo-record.sh: port 18599 is already in use" >&2; exit 1; }
-  (cd "$here/stripe-promo" && go build -o "$work/fakestripe" fakestripe.go)
-  "$work/fakestripe" -addr 127.0.0.1:18599 -key "$STRIPE_SECRET_KEY" > "$work/fake.log" 2>&1 &
+  mkdir -p "$work/bin"
+  (cd "$here/stripe-promo" && go build -o "$work/bin/fakestripe" fakestripe.go)
+  "$work/bin/fakestripe" -addr 127.0.0.1:18599 -key "$STRIPE_SECRET_KEY" > "$work/fake.log" 2>&1 &
   pids+=($!)
-  sleep 1
+  up=
+  for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/18599) 2>/dev/null && { up=1; break; }; sleep 0.1; done
+  [ -n "$up" ] || { echo "stripe-promo-record.sh: the local Stripe stand-in did not start" >&2; cat "$work/fake.log" >&2; exit 1; }
   PI=pi_3RehearsalDemo
 else
   case "${STRIPE_SECRET_KEY:-}" in sk_test_*) ;; *) echo "stripe-promo-record.sh: set STRIPE_SECRET_KEY to a test-mode key (sk_test_...)" >&2; exit 1 ;; esac
   unset STRIPE_API_BASE
   PI=${1:-}
+  if [ -n "$PI" ] && ! [[ "$PI" =~ ^pi_[A-Za-z0-9]+$ ]]; then echo "stripe-promo-record.sh: the argument is not a payment intent id (pi_...)" >&2; exit 1; fi
   if [ -z "$PI" ]; then
-    PI=$(curl -sS https://api.stripe.com/v1/payment_intents -u "$STRIPE_SECRET_KEY:" \
+    write_curl_cfg
+    PI=$(curl -sS -K "$keydir/curl.cfg" https://api.stripe.com/v1/payment_intents \
       -d amount=5000 -d currency=usd -d payment_method=pm_card_visa -d confirm=true \
       -d "automatic_payment_methods[enabled]=true" -d "automatic_payment_methods[allow_redirects]=never" |
       python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
   fi
 fi
+write_curl_cfg
 case "$PI" in pi_*) ;; *) echo "stripe-promo-record.sh: no payment intent id (got '$PI')" >&2; exit 1 ;; esac
 
 # ---- geometry: a 1080x1350 frame, the terminal on top, the page below
@@ -72,7 +114,8 @@ mkdir -p "$work/bin" "$work/snap" "$work/rec"
 (cd "$root/cmd/bide" && go build -o "$work/bin/bide" .)
 
 export PATH="$work/bin:$PATH" PI
-export R=demo-$(date +%H%M%S) # a fresh run id: Stripe replays an Idempotency-Key for 24 hours
+stamp=$(date +%H%M%S)
+export R=demo-$stamp # a fresh run id: Stripe replays an Idempotency-Key for 24 hours
 export DB="$work/stripe-refund.db" SNAP="$work/snap" MARKS="$work/marks.txt"
 
 # The shell helpers the recording uses: they shorten the commands, wrap long lines at spaces (the
@@ -93,10 +136,10 @@ refund() {
   return $rc
 }
 approve() { wrapped stripe-refund approve -db "$DB" -run "$R" -as "$1"; snap "$1"; }
-KEY=$STRIPE_SECRET_KEY
 RC
 cat >> "$work/rc.sh" <<RC
 URL="${STRIPE_API_BASE:-https://api.stripe.com}/v1/refunds?payment_intent=$PI&limit=100"
+CFG="$keydir/curl.cfg"
 RC
 
 # ---- the tape, generated so the time of the first Enter is known
@@ -150,7 +193,7 @@ add 'Type "refund"'; add Enter; add 'Wait+Screen@40s /Receipt/'; sleepfor 2.0
 add 'Type "clear"'; add Enter
 typeit "# check Stripe: refunds carrying this run's key"; add Enter
 sleepfor 0.4
-typeit 'curl -su $KEY: $URL | grep -c bide_key'; add Enter; sleepfor 3
+typeit 'curl -sK $CFG $URL | grep -c bide_key'; add Enter; sleepfor 3
 add Hide
 add 'Type "mark end"'; add Enter; add 'Sleep 500ms'
 
@@ -189,18 +232,23 @@ state() { # name [view flags...]
   port=$((port + 1))
   "$work/bin/bide" view -db "$SNAP/$name/stripe-refund.db" -run "$R" -addr 127.0.0.1:$port "$@" > "$work/view-$name.log" 2>&1 &
   local pid=$!; pids+=($pid)
-  for _ in $(seq 100); do grep -q "http://" "$work/view-$name.log" && break; sleep 0.2; done
+  up=
+  for _ in $(seq 100); do grep -q "http://" "$work/view-$name.log" && { up=1; break; }; sleep 0.2; done
+  [ -n "$up" ] || { echo "stripe-promo-record.sh: bide view did not start for $name:" >&2; cat "$work/view-$name.log" >&2; exit 1; }
   sk=$SKIP
   shot "http://127.0.0.1:$port/run?id=$R" "$work/$name.png" "$sk"
   [ "$name" = resolved ] && recon_shot "http://127.0.0.1:$port/run?id=$R" "$work/reconciled.png"
   kill $pid 2>/dev/null || true
 }
-# bide view only reads: the journal and every snapshot must be byte for byte the same after the pages are made
-hashes() { shasum -a 256 "$DB" "$SNAP"/*/stripe-refund.db; }
+# bide view only reads: the journal and every snapshot (the .db, and the -wal when it has content) must be byte for byte the same after the pages are made
+# An empty -wal holds no data: SQLite creates one when it opens a journal that has none, so only a -wal with
+# content is hashed. A .db is always hashed.
+hashes() { local f; for f in "$DB" "$SNAP"/*/stripe-refund.db; do shasum -a 256 "$f"; done; for f in "$DB-wal" "$SNAP"/*/stripe-refund.db-wal; do [ -s "$f" ] && shasum -a 256 "$f"; done; return 0; }
 before=$(hashes)
 for s in pending ops finance crashed halted resolved; do state "$s"; done
-[ "$before" = "$(hashes)" ] || { echo "stripe-promo-record.sh: a journal changed while its page was made" >&2; exit 1; }
-echo "journal and snapshots unchanged by bide view (sha256 checked)" >&2
+after=$(hashes)
+[ "$before" = "$after" ] || { echo "stripe-promo-record.sh: a journal changed while its page was made:" >&2; diff <(echo "$before") <(echo "$after") >&2; exit 1; }
+echo "journal and snapshots unchanged by bide view (sha256 of .db and -wal files)" >&2
 # Before the first journal exists: a static card.
 cat > "$work/card.html" <<'HTML'
 <!doctype html><meta charset="utf-8"><style>
@@ -234,16 +282,13 @@ for s in pending ops finance crashed halted resolved reconciled; do
   echo "$s at ${at}s" >&2
 done
 chain+="[term][$prev]vstack,format=yuv420p[v]"
-mkdir -p "$OUT"
 ffmpeg -loglevel error -y "${inputs[@]}" -filter_complex "$chain" -map "[v]" -r 24 -c:v libx264 -crf 20 -preset slow -movflags +faststart "$work/out.mp4"
 # the GIF: 720 wide keeps it under about 5 MB
 ffmpeg -loglevel error -y -i "$work/out.mp4" -filter_complex "[0:v]fps=10,scale=720:-1:flags=lanczos,split[x][y];[x]palettegen=max_colors=96:stats_mode=diff[p];[y][p]paletteuse=dither=none:diff_mode=rectangle" "$work/out.gif"
 
 # ---- the key must not be in anything kept
-if [ -z "${STRIPE_PROMO_REHEARSE:-}" ] && grep -rlF "$STRIPE_SECRET_KEY" "$work" 2>/dev/null | grep -v '^$' | grep -q .; then
-  echo "stripe-promo-record.sh: the Stripe key appears in a recording file; nothing was written" >&2
-  exit 1
-fi
+key_guard "$work" "$STRIPE_SECRET_KEY" || { echo "stripe-promo-record.sh: the Stripe key appears in a recording file, or the check failed; nothing was written" >&2; exit 1; }
+mkdir -p "$OUT"
 cp "$work/out.mp4" "$OUT/stripe-refund-split.mp4"
 cp "$work/out.gif" "$OUT/stripe-refund-split.gif"
 ffmpeg -loglevel error -y -i "$work/out.mp4" -vf "fps=1/2,scale=360:-1,tile=6x3" -frames:v 1 "$OUT/contact-sheet.png"

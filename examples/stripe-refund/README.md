@@ -11,7 +11,7 @@ dependency.
 
 <p align="center"><img src="img/stripe-refund-dark.gif" width="100%" alt="A real Stripe test-mode run: two approvers sign off, the process is killed right after the refund request is sent (exit status 3), the restart halts because the outcome is unknown, the reconciling restart finds the refund in Stripe's own record and completes, and Stripe holds exactly 1 refund"></p>
 
-The recording is a real run against Stripe test mode (`assets/demo/stripe-refund-record.sh` regenerates it). `assets/demo/stripe-promo-record.sh` makes a portrait split-screen version, with the run's `bide view` page beside the terminal.
+The recording is a real run against Stripe test mode (`assets/demo/stripe-refund-record.sh` regenerates it). `assets/demo/stripe-promo-record.sh` makes a portrait split-screen version, with the run's `bide view` page below the terminal.
 
 ## The flow
 
