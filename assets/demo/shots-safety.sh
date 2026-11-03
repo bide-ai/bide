@@ -9,7 +9,6 @@
 #   Untrusted content (docs/guides/untrusted-content.md)
 #     cli-approve-taint-list  bide approve -list: the held refund, its reason, the 2-of-3 gate
 #     run-viewer-taint-hold   bide view, the run page: the refund held because the run read inbound-email
-#     run-viewer-taint-attention  bide view, Needs attention: the same hold
 #   Amount caps (docs/guides/amount-caps.md)
 #     run-viewer-cap-refused  bide view, the run page: a $4,800 refund refused by the per-call cap
 #     cli-audit-caps          bide audit caps: the day's ledger, two refunds counted
@@ -138,21 +137,26 @@ for theme in ${VARIANTS:-dark light}; do
   FONT=13 term cli-stop-set "$theme" 330 "$work/t" \
     'bide stop -db safety.db -tool refund -reason "provider incident" \' \
     '  -stop-policy stop-policy.json -as ops -key ops.key -yes'
-  FONT=13 term cli-stop-lift "$theme" 330 "$stopped" \
+  rm -rf "$work/l" && cp -R "$stopped" "$work/l" # the lift changes the journal the viewer shows stopped
+  FONT=13 term cli-stop-lift "$theme" 330 "$work/l" \
     "bide stop -db safety.db -lift $id -reason \"provider recovered\" \\" \
     '  -stop-policy stop-policy.json -as finance -key finance.key -yes'
   FONT=13 term cli-audit-stops "$theme" 330 "$lifted" \
     'bide audit stops -db safety.db -stop-policy stop-policy.json \' \
     '  -sth stop-heads.jsonl -pubkey log.pub'
-  shot run-viewer-stop-banner "http://127.0.0.1:$((port + 1))/run?id=refund-4801" 1500
+  OPEN_SELECTOR=details.gatewhy shot run-viewer-stop-banner "http://127.0.0.1:$((port + 1))/run?id=refund-4801" 1000
   # Untrusted content
-  term cli-approve-taint-list "$theme" 460 "$base" \
+  FONT=13 term cli-approve-taint-list "$theme" 380 "$base" \
     'bide approve -db safety.db -list -approver-keys approver-keys.json'
-  shot run-viewer-taint-hold "http://127.0.0.1:$port/run?id=refund-4801" 1500
-  shot run-viewer-taint-attention "http://127.0.0.1:$port/attention" 900
+  OPEN_SELECTOR=details.gatewhy shot run-viewer-taint-hold "http://127.0.0.1:$port/run?id=refund-4801" 1000
   # Amount caps
   shot run-viewer-cap-refused "http://127.0.0.1:$port/run?id=refund-4813" 1500
   term cli-audit-caps "$theme" 250 "$base" 'bide audit caps -db safety.db -unanchored'
   # Earned authority
-  term cli-earned-authority "$theme" 880 "$base" 'earned-authority'
+  term cli-earned-authority "$theme" 600 "$base" 'earned-authority'
 done
+
+# Two different pictures must never be the same file (a shot taken after a state changed under it).
+dups=$(cd "$out" && for n in cli-stop-set cli-stop-lift cli-audit-stops run-viewer-stop-banner cli-approve-taint-list run-viewer-taint-hold run-viewer-cap-refused cli-audit-caps cli-earned-authority; do
+  for t in ${VARIANTS:-dark light}; do [ -f "$n-$t.png" ] && shasum "$n-$t.png"; done; done | sort | awk 'seen[$1]++ {print $2}')
+[ -z "$dups" ] || { echo "shots-safety.sh: identical images: $dups" >&2; exit 1; }

@@ -48,6 +48,13 @@ to stay just under it; the figures are in the journal, in the `gate-reason:<call
 action, why, currency, amount and limit in minor units). A refusal is final for the call: a second
 attempt by the model is a new call with its own decision.
 
+A $4,800 refund asked for under `big_refund` (500 USD), as `bide view` shows the run: the model's call, the `gate-reason` record with the rule, the action and the figures in minor units, and the tool result the model reads, which names the rule and not the limit:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-cap-refused-dark.png">
+  <img src="./img/run-viewer-cap-refused-light.png" alt="bide view run page for refund-4813, completed: the model calls refund for 480000 USD, a gate-reason record names rule big_refund with action refuse and limit 50000, and the tool result is an error saying the call exceeds a configured amount limit">
+</picture>
+
 ## What is checked, and when
 
 At registration (`agent.New`, `agent.WithTools`) every failure is `agent.ErrConfig`: a line that does
@@ -209,6 +216,13 @@ For each ledger run (`@cap/...`) it checks:
    store could have deleted a slot or appended a release there unseen. A signature covers what the store was
    given at signing, not that it was legitimate: a slot written through the signing store is signed. Run the audit after the store has
    anchored (with `WithMinInterval`, after the interval or a `Flush`).
+
+The report on a journal with two refunds counted in the day's ledger, run without signed heads (`-unanchored`, which the first line says):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-audit-caps-dark.png">
+  <img src="./img/cli-audit-caps-light.png" alt="bide audit caps -unanchored: the UNANCHORED warning, one ledger refund_total for USD with 2 live slots and a window total of 43000 against a limit of 500000 in minor units, and PASS">
+</picture>
 
 It also reports, without failing, the **reconcile exposure**: per window, the slots still counted for
 attempts the journal records as never started, and their amount. Those are the slots the next `Recover`

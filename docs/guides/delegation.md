@@ -256,6 +256,13 @@ verified as `lastSeen` for its next check. Without a last-seen head, a proof aga
 shows only that the grant was current then. Combine it with `VerifyDelegationChain` (the grant
 descends from the root) and `Grant.Expired` (it is in date).
 
+`go run ./earned-authority` in `examples/govern` (offline, no model): the limit starts at 2, widens to 5 and then to the root's ceiling of 10 after clean streaks, stays at the ceiling, and falls to 2 at once when an anomaly is flagged, with the superseded grant no longer current in the ledger:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-earned-authority-dark.png">
+  <img src="./img/cli-earned-authority-light.png" alt="Output of the earned-authority example: baseline limit 2, promotion to 5 and then to the ceiling of 10 after clean actions, each earned grant verifying within the root ceiling, then an anomaly resets authority to 2 and the limit-10 grant is revoked by the ledger">
+</picture>
+
 The asymmetry is the safety property: promotion is slow, capped, and evidence-gated; attenuation
 (the anomaly reset) is immediate and ungated, because shrinking authority is always safe. It is
 deliberately a durable, sequential controller rather than a convergent machine, because earning is

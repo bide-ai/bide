@@ -106,6 +106,20 @@ run and not asked; the model reads an error result.
   the decision screen, `bide view` and the notifier's `approval.why` show it for the `#taint` instance (a cap
   reason, for a call a cap rule holds, shows the rule and this call's figures as of the ask). It is the
   application's record: no gate reads it and the signed decision does not bind it.
+The `bide approve -list` view of a held call (a sample: an inbound email asked for a $4,800 refund, and the agent's `refund` call waits for two of ops, finance and risk, not the customer the run acts for):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-approve-taint-list-dark.png">
+  <img src="./img/cli-approve-taint-list-light.png" alt="bide approve -list showing run refund-4801, call c2#taint on tool refund, why: untrusted content from inbound-email read by tool read_email, a 2 of 3 gate of ops, finance and risk excluding the requester customer-7, and the bide approve command for each approver">
+</picture>
+
+The same call on the run page of `bide view`, with "why this gate" open. The reason is the application's record and is not part of what an approver signs:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-taint-hold-dark.png">
+  <img src="./img/run-viewer-taint-hold-light.png" alt="bide view run page for refund-4801, waiting for approval: the approval gate card is open on why this gate, untrusted content from inbound-email read by tool read_email, with 0 of 3 approvers decided, the three pending approvers and the gate row for call c2#taint excluding the requester customer-7">
+</picture>
+
 - **An approval clears nothing.** It is a decision on one call. The next side-effecting call is gated again, and
   no operation clears taint on a run.
 - **Not gated:** a `ReadOnly` tool, a tool declared `TaintExempt`, a call requested in the same turn as the read

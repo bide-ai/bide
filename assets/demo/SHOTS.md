@@ -17,10 +17,13 @@ part the guide talks about).
 | `themes` | `shots-themes.sh` | `themes-light`, `themes-dark`, `themes-high-contrast`, `themes-acme-teal` (one page in each theme, 1200 x 900; the last is the custom theme `browser-shots/acme-teal.json`) |
 | `approve-page` | `browser-shots/browser-shots.sh` (`ONLY=approve`) | `approve-page-waiting`, `approve-page-signed` (dark and light, 2x) |
 | `needs-attention` | `browser-shots/browser-shots.sh` | `run-viewer-needs-attention` (dark and light, 2x) |
+| `safety` | `shots-safety.sh` | `cli-stop-set`, `cli-stop-lift`, `cli-audit-stops`, `run-viewer-stop-banner` (kill switch), `cli-approve-taint-list`, `run-viewer-taint-hold` (untrusted content), `run-viewer-cap-refused`, `cli-audit-caps` (amount caps), `cli-earned-authority` (earned authority) (dark and light; the `cli-*` are terminal images, 1200 wide, the viewer ones 1200 x 1000 or 1500) |
 | `live` | `live.sh` | `run-viewer-live-dark.gif` |
 
 `browser-shots/browser-shots.sh` also makes the Slack relay images (`ONLY=relay`), which `scripts/shots.sh`
 leaves alone. `cli-*.png` and `refund-*.png` are terminal images, made by `cli.sh` and `record.sh`.
+
+`shots-safety.sh` (journal from `setup/safety.go`, terminal images recorded with vhs, viewer pages with `capture.mjs`) shares `/tmp/bide-demo` with the deadline and identity demos, so run it one at a time too. The bide it uses to set and lift stops is built with `go build -overlay` so that the stop command's recorded host name is `ops-workstation` and not this machine's; nothing else differs from a stock build. The stop's age and the dates in the pages are the run's, so a new picture differs in those digits.
 
 ## When
 

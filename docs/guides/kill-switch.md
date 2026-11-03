@@ -105,6 +105,20 @@ bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" -yes
 - In basic mode the setter is `-as NAME` or your OS user, recorded with the host name, and shown as
   "asserted, not authenticated". `-list` always says which mode it read.
 
+Setting a stop in audited mode, signed by `ops` under the deployment's stop policy (the figures are from a sample journal; the stop's ID is a digest):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-stop-set-dark.png">
+  <img src="./img/cli-stop-set-light.png" alt="bide stop -tool refund -reason "provider incident" in audited mode, signed by ops: the scope, the reason, who set it, that a saga rollback continues, the audited mode and the new stop in force with its ID">
+</picture>
+
+Lifting it, with one lift by `finance` (the policy needs one, and not from the setter). The command first shows the stop and how many runs it holds:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-stop-lift-dark.png">
+  <img src="./img/cli-stop-lift-light.png" alt="bide stop -lift in audited mode, signed by finance: the stop, 1 held of 1 unfinished run read, the lift reason and the lifter, then the stop lifted, with the held runs carrying on when their recovery drives them">
+</picture>
+
 ### Audited mode from the command line
 
 Give the deployment's policy and sign with an enrolled key:
@@ -182,6 +196,13 @@ trail first; if the control-run write then fails, the lift is on the trail and n
   same rule, before it asks (it lists at most 2000 unfinished runs and stops after 5 seconds, showing "at least N held
   (count incomplete)" and going on to the question, so a huge or slow store never holds up a lift).
 - The control run (`@stop`) is not a run: it is not listed, counted or shown as needing attention.
+
+A run paused by a tool stop, as `bide view -stop-policy` shows it: the red banner on the page (scope, reason, who set it, lifts held) and `held by stop` beside the run's state. The gate card's "why this gate" is open, so the page also shows that this run read untrusted content:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-stop-banner-dark.png">
+  <img src="./img/run-viewer-stop-banner-light.png" alt="bide view with a tool stop in force: a red STOPPED banner naming tool refund, the reason provider incident, who set it and 0 of 1 lifts held; run refund-4801 carries a held by stop pill beside waiting for approval, and its approval gate says why: untrusted content from inbound-email">
+</picture>
 
 ## Basic and audited mode
 
@@ -308,6 +329,13 @@ something to sign, after the trail has verified and the key is checked against `
 not verify signs nothing and opens no key, and a run with nothing new (the newest head already commits to
 every record) opens none either. `bide-hsm audit` runs the `stops` verb only; the other `bide audit` verbs
 sign nothing.
+
+A trail that verifies, here after the stop above was set and lifted, with a signed head over all three records:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/cli-audit-stops-dark.png">
+  <img src="./img/cli-audit-stops-light.png" alt="bide audit stops with the stop policy, a signed head and the log public key: the trail of 3 records, the policy in force, the stop on tool refund set by ops and lifted, and PASS: every record verifies under the pinned policy, VERIFIED exit 0">
+</picture>
 
 `bide audit stops` verifies the trail offline: each record must verify under the policy the
 deployment pinned (`-stop-policy`, the policy document with the approvers' public keys) and the chain

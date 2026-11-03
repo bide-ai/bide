@@ -27,6 +27,8 @@ try {
   await page.waitForSelector('main', { timeout: 15000 }).catch(() => { throw new Error(`${url} has no <main>`); });
   if (expect && !(await page.$eval('main', (m, x) => m.innerText.includes(x), expect))) throw new Error(`${url} does not mention ${expect}`);
   await page.evaluate(() => document.fonts.ready);
+  // OPEN_SELECTOR: <details> elements to open before the picture (the run page's "why this gate").
+  if (process.env.OPEN_SELECTOR) await page.evaluate(sel => document.querySelectorAll(sel).forEach(d => { d.open = true; }), process.env.OPEN_SELECTOR);
   await page.screenshot({ path: out });
 } finally {
   await browser.close();
