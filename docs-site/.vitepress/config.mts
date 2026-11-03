@@ -18,7 +18,7 @@ export default defineConfig({
     ['link', { rel: 'icon', href: '/favicon.png' }],
     ['meta', { name: 'theme-color', content: '#E8A33D' }],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:title', content: 'bide' }],
+    ['meta', { property: 'og:title', content: 'bide: durable, accountable AI agents in Go' }],
     ['meta', { property: 'og:description', content: 'A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.' }],
     ['meta', { property: 'og:url', content: 'https://bide-ai.com' }],
     ['meta', { property: 'og:image', content: 'https://bide-ai.com/bide-social.png' }],

@@ -2,7 +2,7 @@
 // project at build time. The content is gitignored here (it lives in /docs);
 // this keeps node module resolution inside docs-site while authoring stays in
 // one place. Runs before docs:dev and docs:build.
-import { cpSync, existsSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync } from 'node:fs'
 
 const items = [
   'getting-started.md',
@@ -32,3 +32,24 @@ for (const item of items) {
 // The changelog lives at the repository root, not under docs/.
 cpSync(new URL('../CHANGELOG.md', import.meta.url), new URL('./CHANGELOG.md', import.meta.url))
 console.log('synced CHANGELOG.md')
+
+// Images the homepage shows. Copied from their single source (assets/ and docs/guides/img/) into
+// public/home/ so no binary is duplicated in git. Add a file here when home-data.ts uses a new one.
+const homeImages = [
+  ['assets/hero.gif', 'hero.gif'],
+  ['docs/guides/img/approve-page-waiting-dark.png', 'approve-page-waiting-dark.png'],
+  ['docs/guides/img/run-viewer-config-risk-dark.png', 'run-viewer-config-risk-dark.png'],
+  ['docs/guides/img/run-viewer-config-assert-dark.png', 'run-viewer-config-assert-dark.png'],
+  ['docs/guides/img/flow-diff-weakened-dark.png', 'flow-diff-weakened-dark.png'],
+  ['docs/guides/img/cli-approve-dark.gif', 'cli-approve-dark.gif'],
+  ['docs/guides/img/cli-audit-notifications-pass-dark.png', 'cli-audit-notifications-pass-dark.png'],
+  ['docs/guides/img/cli-audit-notifications-fail-dark.png', 'cli-audit-notifications-fail-dark.png'],
+  ['docs/guides/img/flow-edit-weakened.png', 'flow-edit-weakened.png'],
+  ['docs/guides/img/run-viewer-needs-attention-dark.png', 'run-viewer-needs-attention-dark.png'],
+]
+mkdirSync(new URL('./public/home/', import.meta.url), { recursive: true })
+for (const [from, to] of homeImages) {
+  // A missing image fails the build loudly instead of shipping a broken homepage.
+  cpSync(new URL(`../${from}`, import.meta.url), new URL(`./public/home/${to}`, import.meta.url))
+}
+console.log(`synced ${homeImages.length} homepage images`)

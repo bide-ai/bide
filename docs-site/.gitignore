@@ -19,3 +19,6 @@ package-lock.json
 /blog/
 /trust/
 /ARCHITECTURE.md
+
+# Homepage images, copied from assets/ and docs/guides/img/ by sync-docs.mjs.
+/public/home/
