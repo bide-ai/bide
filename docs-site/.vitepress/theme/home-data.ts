@@ -520,7 +520,7 @@ export const tools = {
       id: 't-attn',
       label: 'needs attention',
       title: 'Know what is waiting on a person',
-      html: 'Every run waiting for a person, nearest approval deadline first: approvals pending, halts with an unknown outcome, and whether someone was notified and acknowledged. Try it with no code: <span class="mono">bide sample</span> opens 14 runs in every state.',
+      html: 'Every run waiting for a person, nearest approval deadline first: approvals pending, halts with an unknown outcome, and whether someone was notified and acknowledged. Try it with no code: <span class="mono">bide sample</span> opens 14 runs in every state. <a href="/sample/" target="_blank" rel="noopener">Or open the sample in your browser →</a>',
       cmd: 'bide view -db run.db',
       linkText: 'Read the guide →',
       href: '/guides/run-viewer',

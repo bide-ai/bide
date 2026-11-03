@@ -7,6 +7,7 @@
   "scripts": {
     "sync": "node sync-docs.mjs",
     "docs:dev": "node sync-docs.mjs && vitepress dev",
+    "sample": "node scripts/sample-snapshot.mjs",
     "docs:build": "node sync-docs.mjs && vitepress build",
     "docs:preview": "vitepress preview"
   },

@@ -23,3 +23,6 @@ package-lock.json
 
 # Homepage images, copied from assets/ and docs/guides/img/ by sync-docs.mjs.
 /public/home/
+
+# Static snapshot of bide view on the sample journal, built by scripts/sample-snapshot.mjs.
+/public/sample/
