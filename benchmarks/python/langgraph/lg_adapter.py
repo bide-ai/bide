@@ -267,7 +267,7 @@ class LangGraphRun:
 
 
 # The durable writes (checkpoint put + put_writes, plus cache sets for "cache") a clean
-# run makes with langgraph 1.2.12 / langgraph-checkpoint-sqlite 3.1.1. Measured; checked
+# run makes with langgraph 1.2.19 / langgraph-checkpoint-sqlite 3.1.3. Measured; checked
 # by test_fairness.py::test_writes_match_a_clean_run. It is the sweep bound, as Writes()
 # is in the Go harness.
 WRITES = {

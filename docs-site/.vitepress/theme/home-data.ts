@@ -68,14 +68,14 @@ export interface BenchRow {
   us?: boolean
 }
 
-// A re-run of the benchmark is in progress; a later PR updates these rows.
+// Measured 2026-11-02; the source is assets/demo/chaos-card/results.json (see benchmarks/README.md).
 export const benchmark: BenchRow[] = [
-  { name: 'bide', meta: 'Go · current main · 209 schedules', verdict: 'Never repeated', worst: 'at most once held', us: true },
-  { name: 'LangGraph', meta: 'Python · 1.2.12 · SQLite and Postgres', verdict: 'Charged again', worst: 'worst case: 3 charges' },
-  { name: 'adk-go', meta: 'Go · v2.4.0', verdict: 'Charged again', worst: 'worst case: 4 charges' },
+  { name: 'bide', meta: 'Go · main at 72ffb78 · 209 schedules', verdict: 'Never repeated', worst: 'at most once held', us: true },
+  { name: 'LangGraph', meta: 'Python · 1.2.19 · SQLite and Postgres', verdict: 'Charged again', worst: 'worst case: 3 charges' },
+  { name: 'adk-go', meta: 'Go · v2.7.0', verdict: 'Charged again', worst: 'worst case: 4 charges' },
   { name: 'trpc-agent-go', meta: 'Go · v1.11.2', verdict: 'Charged again', worst: 'worst case: 6 charges' },
-  { name: 'langchaingo', meta: 'Go · v0.1.14 · no crash durability', verdict: 'Charged again', worst: 'worst case: 64 charges' },
-  { name: 'eino', meta: 'Go · v0.9.21 · no crash durability', verdict: 'Charged again', worst: 'worst case: 64 charges' },
+  { name: 'langchaingo', meta: 'Go · v0.1.15 · no crash durability', verdict: 'Charged again', worst: 'worst case: 64 charges' },
+  { name: 'eino', meta: 'Go · v0.9.22 · no crash durability', verdict: 'Charged again', worst: 'worst case: 64 charges' },
 ]
 
 // ---- Resolution ladder ------------------------------------------------------------------

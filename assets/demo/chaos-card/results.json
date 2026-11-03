@@ -1,0 +1,16 @@
+{
+  "measured": "2026-11-02",
+  "bideCommit": "72ffb786d (main, after v0.26.0)",
+  "environment": "Apple M1 Pro, macOS 26.5.2, Go 1.27.0, Python 3.13.14, Postgres 16 (local socket)",
+  "reproduce": "github.com/bide-ai/bide/benchmarks",
+  "stamp": "Measured 2026-11-02 on an M1 Pro.",
+  "footnote": "LangGraph runs in its most durable documented mode. Every adapter passes a fairness test: a run with no crash charges exactly once. Worst-case counts depend on how often a framework saves state, so they are not a ranking: anything above 1 is a double charge.",
+  "rows": [
+    {"name": "bide", "label": "Go · main at 72ffb78", "sweeps": 9, "schedules": 209, "maxFired": 1, "doubleFires": 0},
+    {"name": "LangGraph", "label": "Python · 1.2.19 · sync · SQLite and Postgres", "sweeps": 9, "schedules": 209, "maxFired": 3, "doubleFires": "42 (SQLite), 41 (Postgres)"},
+    {"name": "adk-go", "label": "Go · v2.7.0", "sweeps": 6, "schedules": 206, "maxFired": 4, "doubleFires": 45},
+    {"name": "trpc-agent-go", "label": "Go · v1.11.2", "sweeps": 5, "schedules": 205, "maxFired": 6, "doubleFires": 119},
+    {"name": "langchaingo", "label": "Go · v0.1.15", "sweeps": 4, "schedules": 204, "maxFired": 64, "doubleFires": 204},
+    {"name": "eino", "label": "Go · v0.9.22", "sweeps": 4, "schedules": 204, "maxFired": 64, "doubleFires": 204}
+  ]
+}
