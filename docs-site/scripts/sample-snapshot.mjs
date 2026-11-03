@@ -156,7 +156,7 @@ function rewritePage(html, base, queue, from) {
   out = out.replace(/<span class="pill live" id="live"[^>]*>live<\/span>/g, '')
   // The runs page's filter form (run ID, kind) is a GET form the server answers; the state links
   // beside it are plain pages and stay.
-  out = out.replace(/<form class="filters"[\s\S]*?<\/form>/g, '')
+  out = out.replace(/<form class="filters"[\s\S]*?<\/form>/g, '<p class="muted small">Filtering by run ID and kind needs <code>bide view</code>; the state buttons above work here.</p>')
   out = rewriteLinks(out, base, queue, from)
   out = out.replace('</head>', `<link rel="stylesheet" href="${PREFIX}/assets/snapshot.css"></head>`)
   out = out.replace(/(<body[^>]*>)/, `$1${banner}`)
