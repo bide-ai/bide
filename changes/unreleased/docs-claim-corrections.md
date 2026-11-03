@@ -1,0 +1,3 @@
+Section: Fixed
+
+Documentation corrections: the README and the design note no longer say the agent loop is about 40 lines (`agent/loop.go` is about 1,200 lines of ordinary Go); the README comparison table no longer says Temporal and DBOS have no tamper-evident audit (the pages it cites do not describe one) and now cites their documentation for at-least-once steps; the notifier is described as recording each delivery and whether the endpoint acknowledged it, which is not proof that a person read it; `docs/formal-verification.md` now covers gsm's Rocq proof and how bide checks against it; and the roadmap is published on the docs site.

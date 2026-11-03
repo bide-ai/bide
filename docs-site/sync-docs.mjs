@@ -11,6 +11,7 @@ const items = [
   'GUARANTEE.md',
   'KNOWN-LIMITATIONS.md',
   'tour.md',
+  'ROADMAP.md',
   'formal-verification.md',
   'guides',
   'recipes',
