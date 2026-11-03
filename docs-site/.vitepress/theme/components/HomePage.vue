@@ -17,6 +17,7 @@ import HomeUntrusted from './HomeUntrusted.vue'
 
 <template>
   <div class="bh">
+    <main id="home-main">
     <HomeHero />
     <HomeProblem />
     <HomeLadder />
@@ -30,6 +31,7 @@ import HomeUntrusted from './HomeUntrusted.vue'
     <HomeProof />
     <HomeStart />
     <HomeBlog />
+    </main>
     <HomeFooter />
   </div>
 </template>

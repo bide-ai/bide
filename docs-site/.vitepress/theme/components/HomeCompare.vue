@@ -16,7 +16,8 @@ import { compare } from '../home-data'
           </thead>
           <tbody>
             <tr v-for="r in compare.rows" :key="r[0]">
-              <td v-for="(c, i) in r" :key="i" :class="i === 0 ? 'b' : i === 1 ? 'us' : ''" v-html="c"></td>
+              <th scope="row" class="b" v-html="r[0]"></th>
+              <td v-for="(c, i) in r.slice(1)" :key="i" :class="i === 0 ? 'us' : ''" v-html="c"></td>
             </tr>
           </tbody>
         </table>

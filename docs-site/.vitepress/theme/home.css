@@ -53,6 +53,14 @@
 .bh a:hover {
   color: #f5c27a;
 }
+/* A link inside running text is underlined, so it does not rely on color alone (WCAG 1.4.1). */
+.bh p a,
+.bh figcaption a,
+.bh .callout a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
 .bh img {
   max-width: 100%;
   height: auto;
@@ -318,11 +326,12 @@
   line-height: 1.5;
   background: transparent;
 }
-.bh .tbl tr:last-child td { border-bottom: 0; }
+.bh .tbl tr:last-child td,
+.bh .tbl tr:last-child th { border-bottom: 0; }
 .bh .tbl th { font-weight: 600; color: var(--h-text); font-size: 14px; }
 .bh .tbl th.th-us { color: var(--h-ember); }
 .bh .tbl td { color: var(--h-muted); }
-.bh .tbl td.b { color: #f4f4f5; font-weight: 600; }
+.bh .tbl th.b { color: #f4f4f5; font-weight: 600; font-size: 15px; vertical-align: top; }
 .bh .tbl td.us { color: #f4f4f5; }
 
 .bh .shot {
@@ -469,7 +478,8 @@
 .bh .h-hero-note { margin: 22px 0 0; }
 .bh .h-cmd-inline { color: #c4c4cc; }
 .bh .h-glow { box-shadow: 0 24px 64px -36px rgba(232, 163, 61, 0.06); }
-.bh .h-bar-title { margin-left: 10px; font-size: 12px; color: #71717a; }
+/* #8b8b94 on the terminal bar (#0a0a0c) is 5.8:1; #71717a was 4.1:1, under the 4.5:1 minimum. */
+.bh .h-bar-title { margin-left: 10px; font-size: 12px; color: #8b8b94; }
 .bh .h-hero-img { width: 100%; display: block; }
 .bh .h-audience { padding-block: 0 96px; }
 .bh .h-card-label { margin: 0 0 10px; font-size: 13px; }
