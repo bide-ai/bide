@@ -42,7 +42,7 @@ bide audit notifications -db run.db -pubkey keys/log.pub -sth notify-run.sth.jso
 - 在单个进程内承载成千上万个并发的持久化运行。它是一个库，无需运行集群。
 - 一条可加密验证的审计轨迹：RFC 6962 Merkle 证明，无需信任厂商即可离线核验。
 - 可证明收敛的共享状态：其收敛条件经过机器核验。
-- 人保持掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个通知人并记录通知已发出的通知器。
+- 人保持掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个发送每条通知、并记录你的端点是否确认收到的通知器。
 
 另有两项控制，约束来自外部的文本能让智能体做什么：金额上限（实验性）会拒绝超出限额的调用（针对带有规则的工具，且只针对规则所指明的字段；时间窗口在边界处最多可放过两倍限额），无论模型发来了什么；污点策略（taint policy，实验性，v0.24.0）要求智能体读取宿主标记为不可信的内容之后的副作用经过升级闸门，该闸门可以是人工决定。它们约束的是后果，既不检测也不阻止注入本身（[指南](../../docs/guides/untrusted-content.md)）。
 
@@ -96,7 +96,7 @@ Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之
 
 ## 一条日志，五项保证
 
-智能体循环约 40 行。五项保证来自其下那条持久化、仅追加的日志。
+智能体循环是普通的 Go 代码：调用模型、运行工具、重复。五项保证来自其下那条持久化、仅追加的日志。
 
 ### 1 · 至多一次（实测）
 
@@ -167,12 +167,14 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 ### 与持久化执行及智能体运行时的对比
 
-| | **Bide** | Temporal / DBOS | ADK · eino · trpc · langchaingo |
+| | **Bide** | Temporal / DBOS[^runtimes] | ADK · eino · trpc · langchaingo |
 |---|---|---|---|
 | 崩溃时的非幂等副作用 | **至多一次（结果未知即停机）** | 至少一次；活动/步骤必须幂等 | 至少一次；重新运行（**实测 4–64×**） |
 | 部署 | **一个库 + 一个你本就在运行的数据库** | 服务器 + worker 机群 | 库 |
-| 防篡改审计 | **RFC 6962 Merkle 脊柱（同一条日志）** | 非内建 | 无 |
+| 防篡改审计 | **RFC 6962 Merkle 脊柱（同一条日志）** | 所引页面未描述 | 无 |
 | 收敛的共享状态 | **可证明（gsm）**[^gsm] | 不适用 | 无 |
+
+[^runtimes]: 来源：Temporal 称一个活动“may be executed multiple times”（可能被执行多次），并建议使用幂等的活动（[activity definition](https://docs.temporal.io/activity-definition)）；DBOS 称“Steps are tried at least once but are never re-executed after they complete”（步骤至少尝试一次，完成后不再重新执行）（[workflow tutorial](https://docs.dbos.dev/python/tutorials/workflow-tutorial)）。所引页面没有描述防篡改的审计日志；关于 Temporal 和 LangGraph 的更多细节见[对比](../trust/comparison.md)。
 
 [^gsm]: 收敛定理经过机器核验。gsm 的 `Build` 依据其条件检查每台机器，并且只有在由该证明生成的 Go 表预言机在进程内重新核验之后才返回它；对于处在其片段之内且在成本上限之内的组合子规则，规则预言机还会直接从规则重新核验它。联邦自身的条件，包括事件顺序检查 C1 与 C2，由 gsm 的 Go 代码检查。bide 依赖 gsm v0.14.0；v0.13.0 加入了 C1 与 C2 检查（v0.12.0 两者都没有），而 v0.12.0 修复了 v0.11.0 中 `Build` 的缺口（读取另一个事件所写变量的守卫和效果）。确切范围：[已知限制](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm)。
 

@@ -315,6 +315,24 @@ For the full list per model, see
 [What the bounds do not cover](../spec/tla/README.md#what-the-bounds-do-not-cover) and each
 model's section.
 
+## The convergence proof (Rocq)
+
+The TLA+ models check bide's protocols within bounds. Governed shared state (the `govern` package,
+experimental) rests on a different kind of evidence: a machine-checked proof. gsm's convergence
+theorem is an axiom-free Coq/Rocq proof in
+[normalization-confluence](https://github.com/blackwell-systems/normalization-confluence), checked
+in that repository's CI on Coq 8.18, 8.20 and Rocq 9.3. Two things tie it to bide:
+
+- At run time, gsm's `Build` returns a machine only after a table oracle, Go generated from the
+  proof, re-checks it in-process.
+- In CI, bide's required gsm machine gate (`.github/workflows/gsm-gate.yml`) builds the two
+  checkers extracted from the proof, from the proof commit and digest-pinned Rocq image gsm pins,
+  and runs them on every machine the governance examples build.
+
+A federation's own conditions, including the event-order checks C1 and C2, are checked by gsm's Go
+code, not by the proof's checkers. What the proof covers and the exact scope are in the
+[governance guide](guides/governance.md) and [known limitations](KNOWN-LIMITATIONS.md#governed-state-gsm).
+
 ## Further reading
 
 - [spec/tla/README.md](../spec/tla/README.md): running the models

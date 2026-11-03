@@ -42,7 +42,7 @@ One append-only journal, in a plain-Go library, gives five guarantees:
 - Thousands of concurrent durable runs in one process. It is a library; there is no cluster to run.
 - A cryptographically verifiable audit trail: RFC 6962 Merkle proofs, checkable offline without trusting the vendor.
 - Provably convergent shared state: the convergence conditions are machine-checked.
-- People in control: k-of-n signed approvals with the requester excluded (separation of duties), signing keys in an HSM or a cloud KMS, and a notifier that tells a person and records that it did.
+- People in control: k-of-n signed approvals with the requester excluded (separation of duties), signing keys in an HSM or a cloud KMS, and a notifier that sends each notice and records whether your endpoint acknowledged it.
 
 Two further controls bound what text from outside can make an agent do: amount caps (experimental) refuse a call over a limit, for a tool that carries a rule and in the member it names (a window can pass up to twice its limit across a boundary), whatever the model sent; and a taint policy (experimental, v0.24.0) requires an escalation gate, which can be a human decision, for a side effect after the agent read content the host marked untrusted. They bound consequences; they do not detect or prevent the injection ([untrusted content](docs/guides/untrusted-content.md), [amount caps](docs/guides/amount-caps.md)).
 
@@ -102,7 +102,7 @@ Status: working v0, live-verified end to end. Requires Go 1.27.
 
 ## One journal, five guarantees
 
-The agent loop is about 40 lines. The five guarantees come from the durable, append-only journal
+The agent loop is ordinary Go: call the model, run the tools, repeat. The five guarantees come from the durable, append-only journal
 underneath it.
 
 ### 1 · At most once (measured)
@@ -272,12 +272,14 @@ the approver's claim.
 
 ### vs. durable-execution and agent runtimes
 
-| | **Bide** | Temporal / DBOS | ADK · eino · trpc · langchaingo |
+| | **Bide** | Temporal / DBOS[^runtimes] | ADK · eino · trpc · langchaingo |
 |---|---|---|---|
 | Non-idempotent side effect on crash | **At most once (halts on unknown outcome)** | At least once; activities/steps must be idempotent | At least once; re-runs (**measured 4–64×**) |
 | Deployment | **Library + a DB you already run** | Server + worker fleet | Library |
-| Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not built in | None |
+| Tamper-evident audit | **RFC 6962 Merkle spine (same journal)** | Not described in the pages cited | None |
 | Convergent shared state | **Provable (gsm)**[^gsm] | N/A | None |
+
+[^runtimes]: Sources: Temporal says an activity "may be executed multiple times" and recommends idempotent activities ([activity definition](https://docs.temporal.io/activity-definition)); DBOS says "Steps are tried at least once but are never re-executed after they complete" ([workflow tutorial](https://docs.dbos.dev/python/tutorials/workflow-tutorial)). The pages cited do not describe a tamper-evident audit log; see the [comparison](docs/trust/comparison.md) for Temporal and LangGraph in more detail.
 
 [^gsm]: The convergence theorem is machine-checked. gsm's `Build` checks each machine against its conditions and returns it only after the table oracle, Go generated from the proof, re-checks it in-process; for combinator rules inside its fragment and within a cost cap, the rules oracle re-checks it from the rules as well. A federation's own conditions, including the event-order checks C1 and C2, are checked by gsm's Go code. bide requires gsm v0.14.0; v0.13.0 added the C1 and C2 checks (v0.12.0 had neither), and v0.12.0 fixed the `Build` gap of v0.11.0 for guards and effects that read variables another event writes. Exact scope: [known limitations](https://github.com/bide-ai/bide/blob/main/docs/KNOWN-LIMITATIONS.md#governed-state-gsm).
 

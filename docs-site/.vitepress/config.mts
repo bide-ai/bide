@@ -50,6 +50,7 @@ export default defineConfig({
           { text: 'The guarantee', link: '/GUARANTEE' },
           { text: 'Known limitations', link: '/KNOWN-LIMITATIONS' },
           { text: 'Changelog', link: '/CHANGELOG' },
+          { text: 'Roadmap', link: '/ROADMAP' },
         ],
       },
       {

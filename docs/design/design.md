@@ -10,7 +10,7 @@ Python's mental model into Go and inherited Python's assumptions. This kit does 
 
 Tagline candidate: *"Agents modeled in Go, not translated into it."*
 
-The agent loop is ~40 lines. We don't hide it behind magic; we harden it. The value is in
+The agent loop is ordinary Go (call the model, run the tools, repeat). We don't hide it behind magic; we harden it. The value is in
 the production layer Go is genuinely best at: typed tools, streaming done right, durable
 resume, middleware, telemetry, and deep use of the concurrency model.
 
