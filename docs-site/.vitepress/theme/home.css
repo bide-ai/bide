@@ -582,3 +582,8 @@
 @media (prefers-reduced-motion: reduce) {
   .bh a.card { transition: none; }
 }
+
+/* Untrusted-input screenshots under the three cards. */
+.bh .h-untrusted-shots { margin-top: 28px; }
+.bh .h-untrusted-fig { margin: 0; }
+.bh .h-untrusted-fig figcaption { margin-top: 12px; }

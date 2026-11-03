@@ -334,6 +334,49 @@ export const untrusted = {
       html: '<span class="mono">bide stop</span> pauses every agent, or one tool, flow or agent, before its next side effect; runs resume when it is lifted. Audited mode signs stops and needs a quorum to lift.',
     },
   ],
+  // Screenshots from docs/guides (assets/demo/shots-safety.sh). `position` picks the part of a tall
+  // image the frame shows.
+  shots: [
+    {
+      id: 'u-taint',
+      label: 'taint hold',
+      caption:
+        'The agent read an inbound email, then asked for a refund. The call waits for 2 of 3 approvers, and the gate says why.',
+      image: {
+        src: 'run-viewer-taint-hold-dark.png',
+        alt: 'bide view run page for refund-4801, waiting for approval: the approval gate card is open on why this gate, untrusted content from inbound-email read by tool read_email, with the three pending approvers',
+        width: 1200,
+        height: 1000,
+        position: 'center 45%',
+      },
+    },
+    {
+      id: 'u-cap',
+      label: 'amount cap',
+      caption:
+        'A $4,800 refund over the big_refund rule (500 USD) is refused before the tool runs; the model reads an error that names the rule.',
+      image: {
+        src: 'run-viewer-cap-refused-dark.png',
+        alt: 'bide view run page for refund-4813: the model calls refund for 480000 USD, a gate-reason record names rule big_refund with action refuse and limit 50000, and the tool result is an error saying the call exceeds a configured amount limit',
+        width: 1200,
+        height: 1500,
+        position: 'bottom center',
+      },
+    },
+    {
+      id: 'u-stop',
+      label: 'kill switch',
+      caption:
+        'A stop on the refund tool, in audited mode: the run is held before its next side effect, and the banner shows who set it, why, and the lifts still needed.',
+      image: {
+        src: 'run-viewer-stop-banner-dark.png',
+        alt: 'bide view with a tool stop in force: a red STOPPED banner naming tool refund, the reason provider incident, who set it and 0 of 1 lifts held; run refund-4801 carries a held by stop pill',
+        width: 1200,
+        height: 1000,
+        position: 'top center',
+      },
+    },
+  ] as { id: string; label: string; caption: string; image: Img & { position: string } }[],
 }
 
 // ---- Tools ------------------------------------------------------------------------------
