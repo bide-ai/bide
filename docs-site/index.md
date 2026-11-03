@@ -1,37 +1,12 @@
 ---
 layout: home
-
-hero:
-  name: bide
-  text: Durable, accountable AI agents in Go
-  tagline: "A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable."
-  image:
-    src: /bide-avatar.png
-    alt: bide
-  actions:
-    - theme: brand
-      text: Get started
-      link: /getting-started
-    - theme: alt
-      text: Concepts
-      link: /CONCEPTS
-    - theme: alt
-      text: GitHub
-      link: https://github.com/bide-ai/bide
-
-features:
-  - title: At most once
-    details: A resumed run never re-charges a card or re-sends an email. Side effects are recorded on the journal, not replayed on recovery.
-  - title: HA in one process
-    details: Thousands of concurrent durable runs survive crashes and node handoffs. No cluster, no separate workflow engine to operate.
-  - title: Verifiable audit trail
-    details: Every run's journal is committed to an RFC 6962 Merkle tree. Build inclusion and consistency proofs for any record on demand and check them offline, without trusting the vendor or the process that produced them.
-  - title: Provably convergent state
-    details: Shared governed state is checked against a machine-checked convergence theorem, not eventual hope, and every registry machine, each federation component included, is re-checked in-process by an oracle generated from that proof; a federation's own checks are gsm's Go code. See Known limitations for the scope.
-  - title: People in control
-    details: k-of-n signed approvals with the requester excluded, signing keys in an HSM or a cloud KMS, and a notifier that tells a person and records that it did. Built toward bank requirements; not certified against any standard.
-  - title: The agent surface you need
-    details: Models (OpenAI, Anthropic, Gemini), tools, typed multi-step flows, MCP, multi-agent coordination, and typed human-in-the-loop. Bring your own retrieval and memory.
-  - title: A library, not a cluster
-    details: Plain Go. Import it, bring your own store. Built for ambient agents that run unattended and act under audit.
+title: "bide: durable, accountable AI agents in Go"
+titleTemplate: false
+pageClass: bide-home
+markdownStyles: false
 ---
+
+<!-- The homepage is built from Vue components: .vitepress/theme/components/Home*.vue.
+     All of its text and data are in .vitepress/theme/home-data.ts. -->
+
+<HomePage />
