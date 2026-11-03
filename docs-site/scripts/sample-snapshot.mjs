@@ -115,7 +115,7 @@ const captured = new Date().toISOString().slice(0, 10)
 const flows = [
   { dir: 'flows/refund-v1', label: 'refund flow', args: ['view', '-config', 'flows/refund-v1.yaml'] },
   { dir: 'flows/refund-v2', label: 'weakened gate (diff)', args: ['view', '-config', 'flows/refund-v2.yaml', '-diff', 'flows/refund-v1.yaml'] },
-  { dir: 'flows/refund-bypass', label: 'bypass', args: ['view', '-config', 'flows/refund-bypass.yaml'] },
+  { dir: 'flows/refund-bypass', label: 'gate bypass', args: ['view', '-config', 'flows/refund-bypass.yaml'] },
 ]
 
 const banner =
@@ -152,6 +152,7 @@ function rewritePage(html, base, queue, from) {
   out = out.replace(/<meta http-equiv="refresh"[^>]*>/g, '')
   out = out.replace('; this page reloads every 5 seconds.', '.')
   // Live mode needs the server: drop its script, and the "live" pill that claims the page follows the run.
+  out = out.replace(/<noscript><p class="muted small">The run is in progress:[\s\S]*?<\/noscript>/g, '<p class="muted small">The run was in progress at capture; this snapshot does not follow it.</p>')
   out = out.replace(/<script src="\/assets\/live\.js"[^>]*><\/script>/g, '')
   out = out.replace(/<span class="pill live" id="live"[^>]*>live<\/span>/g, '')
   // The runs page's filter form (run ID, kind) is a GET form the server answers; the state links
