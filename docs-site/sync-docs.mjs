@@ -45,7 +45,7 @@ const homeImages = [
   ['docs/guides/img/cli-approve-dark.gif', 'cli-approve-dark.gif'],
   ['docs/guides/img/cli-audit-notifications-pass-dark.png', 'cli-audit-notifications-pass-dark.png'],
   ['docs/guides/img/cli-audit-notifications-fail-dark.png', 'cli-audit-notifications-fail-dark.png'],
-  ['docs/guides/img/flow-edit-weakened.png', 'flow-edit-weakened.png'],
+  ['docs/guides/img/flow-edit-structure.png', 'flow-edit-structure.png'],
   ['docs/guides/img/run-viewer-needs-attention-dark.png', 'run-viewer-needs-attention-dark.png'],
   ['docs/guides/img/run-viewer-taint-hold-dark.png', 'run-viewer-taint-hold-dark.png'],
   ['docs/guides/img/run-viewer-cap-refused-dark.png', 'run-viewer-cap-refused-dark.png'],
