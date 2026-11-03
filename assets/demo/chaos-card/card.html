@@ -35,7 +35,7 @@
   const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
   const sc = D.rows.map(r => r.schedules);
   document.getElementById('sub').textContent =
-    `A non-idempotent charge, crashed at each of ${Math.min(...sc)} to ${Math.max(...sc)} points in the run, then recovered the way each framework supports.`;
+    `A non-idempotent charge, run through ${Math.min(...sc)} to ${Math.max(...sc)} crash schedules per framework, then recovered the way each framework supports.`;
   document.getElementById('rows').innerHTML = D.rows.map((r, i) => {
     const ok = r.maxFired === 1;
     const cls = ok ? 'bide' : (i % 2 === 0 ? 'alt' : '');
