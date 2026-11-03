@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { data } from '../version.data'
 import { blog, cta, status } from '../home-data'
+
+const statusText = status.statusText.replace('{releases}', String(data.releases)).replace('{since}', data.since)
 </script>
 
 <template>
@@ -23,7 +26,7 @@ import { blog, cta, status } from '../home-data'
     <div class="wrap grid g2 h-top">
       <div>
         <p class="eyebrow">{{ status.statusTitle }}</p>
-        <p class="muted h-status-text">{{ status.statusText }}</p>
+        <p class="muted h-status-text">{{ statusText }}</p>
       </div>
       <div>
         <p class="eyebrow">{{ status.talkTitle }}</p>

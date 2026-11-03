@@ -467,7 +467,7 @@
 .bh .h-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 .bh .h-actions-center { justify-content: center; }
 .bh .h-hero-note { margin: 22px 0 0; }
-.bh .h-cmd-inline { color: #c4c4cc; overflow-wrap: anywhere; }
+.bh .h-cmd-inline { color: #c4c4cc; }
 .bh .h-glow { box-shadow: 0 40px 120px -40px rgba(232, 163, 61, 0.25); }
 .bh .h-bar-title { margin-left: 10px; font-size: 12px; color: #71717a; }
 .bh .h-hero-img { width: 100%; display: block; }
@@ -566,6 +566,13 @@
 .bh .h-footer-col { display: flex; flex-direction: column; gap: 10px; }
 .bh .h-footer-title { color: #f4f4f5; font-weight: 600; }
 
+@media (max-width: 480px) {
+  /* The long go run line breaks mid-path on a phone; the brew install above says the same. */
+  .bh .h-hero-note { display: none; }
+  .bh .h-badge { font-size: 12px; gap: 6px; padding: 5px 10px; flex-wrap: nowrap; }
+  .bh .h-install .code { font-size: 12px; padding: 14px 14px; }
+  .bh .h-cta-term .code { font-size: 11px; padding: 14px 14px; }
+}
 @media (max-width: 720px) {
   .bh .section { padding-block: 72px; }
   .bh .frame { height: 380px; }

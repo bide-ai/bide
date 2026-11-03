@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { data } from '../version.data'
 import { proofs } from '../home-data'
 </script>
 
@@ -9,8 +10,8 @@ import { proofs } from '../home-data'
       <h2 class="h2 h-narrow">{{ proofs.title }}</h2>
       <p class="lede h-mb40">{{ proofs.lede }}</p>
       <div class="grid g-stats">
-        <div v-for="s in proofs.stats" :key="s.value + s.html" class="stat">
-          <b>{{ s.value }}</b><span v-html="s.html"></span>
+        <div v-for="s in proofs.stats" :key="s.html" class="stat">
+          <b>{{ s.from ? data[s.from] : s.value }}</b><span v-html="s.html"></span>
         </div>
       </div>
       <div class="grid g4">

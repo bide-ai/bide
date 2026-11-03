@@ -19,7 +19,7 @@ export const hero = {
   title: 'Durable, accountable AI agents in Go.',
   lede: 'A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.',
   installHtml:
-    '<span class="p">$</span> brew install bide-ai/tap/bide\n<span class="p">$</span> bide demo   <span class="c"># crash mid-payment, no API key</span>',
+    '<span class="p">$</span> brew install bide-ai/tap/bide\n<span class="c"># crash an agent mid-payment, no API key</span>\n<span class="p">$</span> bide demo',
   note: 'No Go install needed for the demo with Homebrew. Or:',
   noteCmd: 'go run github.com/bide-ai/bide/cmd/bide@latest demo',
   figure: {
@@ -547,10 +547,13 @@ export const proofs = {
   title: 'Each claim links to its evidence and its limits.',
   lede: 'Built toward what a bank asks of software that moves money: keys outside the application, separation of duties, a tamper-evident trail, explicit failure modes. Not certified against any standard.',
   stats: [
-    { value: '14', html: 'TLA+ models of the runtime\'s protocols' },
-    { value: '28', html: "bugs the models found in bide's own design or code" },
-    { value: '495', html: 'model configurations checked in the merge queue' },
+    // Derived at build time from docs/formal-verification.md (see version.data.ts); the key says which.
+    { value: '', from: 'models', html: 'TLA+ models of the runtime\'s protocols' },
+    { value: '', from: 'bugs', html: "bugs the models found in bide's own design or code" },
+    { value: '', from: 'configs', html: 'model configurations checked in the merge queue' },
+    // Literal. Source: the `bide audit` verbs in docs/reference/cli.md.
     { value: '17', html: 'offline <span class="mono">bide audit</span> checks' },
+    // Literal. Source: agent/architecture_test.go TestCoreModuleRequiresNothing.
     { value: '0', html: 'modules the core requires' },
   ],
   cards: [
@@ -655,7 +658,8 @@ export const blog = {
 export const status = {
   statusTitle: 'Status',
   statusText:
-    'Working v0, released often (31 releases since 2026-09-28). On 0.x, a minor version may break the API, and journals are not promised to resume across pre-1.0 releases: finish in-flight runs before you upgrade. Go only today; other languages are on the roadmap.',
+    // {releases} and {since} are filled in at build time from CHANGELOG.md (see version.data.ts).
+    'Working v0, released often ({releases} releases since {since}). On 0.x, a minor version may break the API, and journals are not promised to resume across pre-1.0 releases: finish in-flight runs before you upgrade. Go only today; other languages are on the roadmap.',
   talkTitle: 'Talk to us',
   talkText: 'Building agents that move money, change records, or act under audit? Questions, feedback and pilots:',
   email: 'dayna@blackwell-systems.com',

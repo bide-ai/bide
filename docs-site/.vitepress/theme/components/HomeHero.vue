@@ -21,7 +21,8 @@ import { homeImg } from '../img'
           <a class="btn btn-s" href="https://github.com/bide-ai/bide">View on GitHub</a>
         </div>
         <p class="small h-hero-note">
-          {{ hero.note }} <span class="mono h-cmd-inline">{{ hero.noteCmd }}</span>
+          {{ hero.note }}
+          <span class="mono h-cmd-inline">{{ hero.noteCmd }}</span>
         </p>
       </div>
       <div class="h-hero-fig">
