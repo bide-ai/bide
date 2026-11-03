@@ -109,7 +109,7 @@ Setting a stop in audited mode, signed by `ops` under the deployment's stop poli
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./img/cli-stop-set-dark.png">
-  <img src="./img/cli-stop-set-light.png" alt="bide stop -tool refund -reason "provider incident" in audited mode, signed by ops: the scope, the reason, who set it, that a saga rollback continues, the audited mode and the new stop in force with its ID">
+  <img src="./img/cli-stop-set-light.png" alt="bide stop -tool refund -reason 'provider incident' in audited mode, signed by ops: the scope, the reason, who set it, that a saga rollback continues, the audited mode and the new stop in force with its ID">
 </picture>
 
 Lifting it, with one lift by `finance` (the policy needs one, and not from the setter). The command first shows the stop and how many runs it holds:
