@@ -28,3 +28,13 @@ workflow itself builds and deploys to GitHub Pages via
 2. Set the custom domain to `bide-ai.com` (a `CNAME` file is already emitted from
    `docs-site/public/CNAME`).
 3. Point DNS at GitHub Pages (see the Cloudflare records for `bide-ai.com`).
+
+## Links to repo files
+
+The docs link to source files, `examples/`, `spec/` and `docs/design/**` with
+repo-relative paths so they work on GitHub. The site does not publish those
+targets, so `sync-docs.mjs` rewrites each such link in the synced copy (never
+in `docs/`) to an absolute `github.com/bide-ai/bide` URL; see
+`rewrite-links.mjs`. Links to pages the site publishes are left alone, and the
+dead-link check is on: a link that is broken on GitHub too fails the build.
+Test the rewrite with `node --test rewrite-links.test.mjs`.
