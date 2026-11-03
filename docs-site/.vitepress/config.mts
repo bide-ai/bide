@@ -4,12 +4,9 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   srcExclude: ['README.md', 'CONTEXT.md', 'design/**'],
   cleanUrls: true,
-  // The docs are authored to be read in-repo on GitHub too, so they link to
-  // source files, examples, and CONTRIBUTING with repo-relative paths. Those
-  // targets are not pages on the standalone site, so skip the dead-link gate
-  // rather than fork the prose. (Follow-up: rewrite source links to absolute
-  // github.com URLs so they resolve on the site as well.)
-  ignoreDeadLinks: true,
+  // The docs are authored to be read on GitHub, so they link to source files and docs/design/**
+  // with repo-relative paths. sync-docs.mjs rewrites those to github.com URLs in the synced copies,
+  // so the dead-link check is on: any link left broken is a real docs bug.
   lang: 'en-US',
   title: 'bide',
   description: 'A Go framework for AI agents that move money: risky calls approved, every action recorded and verifiable.',
