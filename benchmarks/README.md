@@ -12,6 +12,14 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 
 ## Result
 
+Measured on 2026-11-02 on an Apple M1 Pro (macOS 26.5.2, Go 1.27.0), with bide taken from the
+checkout (`replace` in `go.mod`) at `72ffb786d` (main, after v0.26.0). The SDK versions are the
+ones `go.mod` pins, each the latest stable release that day: adk-go (`google.golang.org/adk/v2`)
+v2.7.0, trpc-agent-go v1.11.2, langchaingo v0.1.15, eino v0.9.22. The same run on the
+previous pins (adk-go v2.4.0, langchaingo v0.1.14, eino v0.9.21) gave identical counts, so the
+upgrades changed no result. The card `assets/chaos-results.png` is built from
+`assets/demo/chaos-card/results.json` (`assets/demo/chaos-card/README.md`).
+
 ```
 Bide             sweeps=9   schedules=209   maxFired=1  PASS ✓ (at-most-once held)
 trpc-agent-go    sweeps=5   schedules=205   maxFired=6  FAIL ✗ (119 double-fires, worst=6)
@@ -98,9 +106,9 @@ Postgres rows (`langgraph-pg`) passed their own
 ([#167](https://github.com/bide-ai/bide/pull/167)).
 
 `python/langgraph/` is a Python harness, isolated from the Go modules, pinned with `uv`
-(`pyproject.toml` + `uv.lock`): langgraph 1.2.12, langgraph-checkpoint-sqlite 3.1.1,
-langgraph-checkpoint-postgres 3.1.2 (psycopg 3.3.6), langgraph-checkpoint 4.2.0, Python
-3.13. `chaos.py` is a line-for-line port of `chaos.Verify` and of Go's `math/rand/v2` PCG,
+(`pyproject.toml` + `uv.lock`): langgraph 1.2.19, langgraph-checkpoint-sqlite 3.1.3,
+langgraph-checkpoint-postgres 3.2.0 (psycopg 3.3.6), langgraph-checkpoint 4.3.1, Python
+3.13 (run it with `uv run --python 3.13`; on 3.14 one Postgres resume test, which depends on write timing, failed once and passed on rerun). `chaos.py` is a line-for-line port of `chaos.Verify` and of Go's `math/rand/v2` PCG,
 so it runs the same crash schedules (checked against Go's output in the tests) and prints
 the same rows.
 
@@ -108,8 +116,8 @@ Run it (needs `uv`):
 
 ```
 cd benchmarks/python/langgraph
-uv run pytest -q        # fairness checks
-uv run python bench.py  # the benchmark, every configuration
+uv run --python 3.13 pytest -q        # fairness checks
+uv run --python 3.13 python bench.py  # the benchmark, every configuration
 ```
 
 The Postgres runs use the server at `LGCHAOS_PG_DSN` (default `dbname=postgres`, the local
@@ -122,11 +130,11 @@ A run killed with SIGKILL leaves its database behind; drop any leftovers with:
 psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'lgchaos\_%'" | xargs -I{} psql -d postgres -c 'DROP DATABASE "{}" WITH (FORCE)'
 ```
 
-Measured on 2026-10-03 (Postgres 16.15, local socket):
+Measured on 2026-11-02 (Postgres 16.15, local socket, Python 3.13.14; the 130 tests pass):
 
 ```
-langgraph        sweeps=9   schedules=209   maxFired=3  FAIL ✗ (40 double-fires, worst=3)
-langgraph-pg     sweeps=9   schedules=209   maxFired=3  FAIL ✗ (42 double-fires, worst=3)
+langgraph        sweeps=9   schedules=209   maxFired=3  FAIL ✗ (42 double-fires, worst=3)
+langgraph-pg     sweeps=9   schedules=209   maxFired=3  FAIL ✗ (41 double-fires, worst=3)
 ```
 
 The first row is the `trpc.go` shape (`start → charge`, the side effect in the `charge` node) on a

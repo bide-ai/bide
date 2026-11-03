@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>chaos results card</title>
+<style>
+  :root { --bg:#0e1217; --fg:#e8ecf2; --mute:#8b93a1; --row:#141a22; --green:#3fb950; --greenbg:#14281a; --red:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; width:1200px; height:1280px; background:var(--bg); color:var(--fg);
+         font-family: Inter, "SF Pro Display", -apple-system, "Helvetica Neue", Arial, sans-serif; padding:80px 56px 0; position:relative; }
+  h1 { margin:0 0 0 24px; font-size:48px; line-height:65px; font-weight:700; letter-spacing:-.5px; }
+  .sub { margin:14px 0 24px 24px; font-size:23px; line-height:33px; color:var(--mute); max-width:900px; }
+  .row { display:flex; justify-content:space-between; align-items:center; height:118px; padding:0 24px; border-radius:20px; }
+  .row.alt { background:var(--row); }
+  .row.bide { background:var(--greenbg); border:2px solid var(--green); height:102px; margin-bottom:14px; }
+  .name { font-size:38px; font-weight:600; }
+  .meta { font-family: "JetBrains Mono", "DM Mono", "SF Mono", ui-monospace, Menlo, monospace; font-size:21px; color:var(--mute); margin-top:6px; }
+  .right { text-align:right; }
+  .verdict { font-size:38px; font-weight:700; color:var(--red); }
+  .detail { font-size:23px; color:var(--mute); margin-top:4px; }
+  .bide .verdict { color:var(--green); } .bide .detail { color:var(--green); }
+  .foot { margin:34px 24px 0; font-size:21px; line-height:32px; color:var(--mute); max-width:830px; }
+  .repro { margin:24px 24px 0; font-family: "JetBrains Mono", "DM Mono", "SF Mono", ui-monospace, Menlo, monospace; font-size:22px; color:var(--mute); }
+  .site { position:absolute; right:80px; bottom:40px; font-size:28px; font-weight:700; }
+  .stamp { position:absolute; left:80px; bottom:40px; font-size:17px; color:var(--mute); font-family: "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace; }
+</style>
+<body>
+  <h1>Crash the agent mid-task. Restart it.<br>Did the charge go through twice?</h1>
+  <div class="sub" id="sub"></div>
+  <div id="rows"></div>
+  <div class="foot" id="foot"></div>
+  <div class="repro" id="repro"></div>
+  <div class="stamp" id="stamp"></div>
+  <div class="site">bide-ai.com</div>
+<script>
+  const D = window.RESULTS;
+  const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const sc = D.rows.map(r => r.schedules);
+  document.getElementById('sub').textContent =
+    `A non-idempotent charge, run through ${Math.min(...sc)} to ${Math.max(...sc)} crash schedules per framework, then recovered the way each framework supports.`;
+  document.getElementById('rows').innerHTML = D.rows.map((r, i) => {
+    const ok = r.maxFired === 1;
+    const cls = ok ? 'bide' : (i % 2 === 0 ? 'alt' : '');
+    const detail = ok ? 'at most once held' : `worst case: ${r.maxFired} charge${r.maxFired === 1 ? '' : 's'}`;
+    return `<div class="row ${cls}"><div><div class="name">${esc(r.name)}</div><div class="meta">${esc(r.label)}</div></div>` +
+      `<div class="right"><div class="verdict">${ok ? 'Never repeated' : 'Charged again'}</div><div class="detail">${detail}</div></div></div>`;
+  }).join('');
+  document.getElementById('foot').textContent = D.footnote;
+  document.getElementById('repro').textContent = 'Reproduce: ' + D.reproduce;
+  document.getElementById('stamp').textContent = D.stamp;
+</script>
