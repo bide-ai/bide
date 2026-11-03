@@ -65,6 +65,16 @@ jobs:
         if: steps.changed.outputs.build != 'false'
         working-directory: docs-site
         run: npm install
+      # The static snapshot of bide view on the sample journal (served at /sample/). It builds bide
+      # from this checkout; if it fails, the docs build fails rather than shipping a broken /sample/.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.changed.outputs.build != 'false'
+        with:
+          go-version: '1.27'
+      - name: Sample snapshot
+        if: steps.changed.outputs.build != 'false'
+        working-directory: docs-site
+        run: npm run sample
       - name: Build
         if: steps.changed.outputs.build != 'false'
         working-directory: docs-site

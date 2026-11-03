@@ -22,6 +22,8 @@ export const hero = {
     '<span class="p">$</span> brew install bide-ai/tap/bide\n<span class="c"># crash an agent mid-payment, no API key</span>\n<span class="p">$</span> bide demo',
   note: 'No Go install needed for the demo with Homebrew. Or:',
   noteCmd: 'go run github.com/bide-ai/bide/cmd/bide@latest demo',
+  sampleLinkText: 'Explore a sample run in your browser →',
+  sampleLinkHref: '/sample/',
   figure: {
     src: 'hero.gif',
     alt: 'bide demo: an agent is killed mid-charge and the restart halts with outcome unknown instead of charging again, and ops is notified; then a refund requested by untrusted inbound email is held with the reason; the requester is refused by separation of duties; two approvers sign, the refund runs once, and the audit verifies',
@@ -520,7 +522,7 @@ export const tools = {
       id: 't-attn',
       label: 'needs attention',
       title: 'Know what is waiting on a person',
-      html: 'Every run waiting for a person, nearest approval deadline first: approvals pending, halts with an unknown outcome, and whether someone was notified and acknowledged. Try it with no code: <span class="mono">bide sample</span> opens 14 runs in every state.',
+      html: 'Every run waiting for a person, nearest approval deadline first: approvals pending, halts with an unknown outcome, and whether someone was notified and acknowledged. Try it with no code: <span class="mono">bide sample</span> opens 14 runs in every state. <a href="/sample/" target="_self">Or open the sample in your browser →</a>',
       cmd: 'bide view -db run.db',
       linkText: 'Read the guide →',
       href: '/guides/run-viewer',

@@ -24,6 +24,9 @@ import { homeImg } from '../img'
           {{ hero.note }}
           <span class="mono h-cmd-inline">{{ hero.noteCmd }}</span>
         </p>
+        <p class="small muted" style="margin: 8px 0 0">
+          <a :href="hero.sampleLinkHref" target="_self">{{ hero.sampleLinkText }}</a>
+        </p>
       </div>
       <div class="h-hero-fig">
         <figure>
